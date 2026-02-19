@@ -39,6 +39,32 @@ def _resolve_target_chat_id(
     return int(context.application.bot_data["chat_id"])
 
 
+def _resolve_target_message_thread_id(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int | None:
+    runtime_message_thread_id = context.application.bot_data.get("runtime_message_thread_id")
+    if runtime_message_thread_id is not None:
+        return int(runtime_message_thread_id)
+
+    default_message_thread_id = context.application.bot_data.get("message_thread_id")
+    if default_message_thread_id is None:
+        return None
+
+    return int(default_message_thread_id)
+
+
+def _remember_runtime_destination(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if update.effective_chat is not None:
+        context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
+
+    message = update.effective_message
+    if message is not None and message.message_thread_id is not None:
+        context.application.bot_data["runtime_message_thread_id"] = message.message_thread_id
+
+
 async def _send_with_retry(
     context: ContextTypes.DEFAULT_TYPE,
     *,
@@ -95,6 +121,7 @@ async def _reply_with_retry(
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
     chat_id = _resolve_target_chat_id(context)
+    message_thread_id = _resolve_target_message_thread_id(context)
 
     try:
         report_date, metrics = await service.build_daily_report()
@@ -114,12 +141,7 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None:
         return
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat is None:
-        return
-
-    context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
+    _remember_runtime_destination(update, context)
     await _reply_with_retry(
         update,
         "Привет! Я отправляю ежедневный отчет по Ozon/WB в 10:00.\n"
@@ -131,9 +153,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def report_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
     _remember_runtime_destination(update, context)
-
-    if update.effective_chat is not None:
-        context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
 
     try:
         report_date, metrics = await service.build_daily_report()
