@@ -31,6 +31,23 @@ _STARTUP_RETRY_DELAY_SECONDS = 5.0
 
 
 
+def _resolve_target_chat_ids(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> tuple[int, ...]:
+    candidates: list[int] = []
+
+    for key in ("runtime_chat_id", "chat_id"):
+        value = context.application.bot_data.get(key)
+        if value is None:
+            continue
+
+        chat_id = int(value)
+        if chat_id not in candidates:
+            candidates.append(chat_id)
+
+    return tuple(candidates)
+
+
 def _resolve_scheduled_destinations(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> tuple[tuple[int, int | None], ...]:
@@ -58,15 +75,6 @@ def _resolve_scheduled_destinations(
             candidates.append(runtime_destination)
 
     return tuple(candidates)
-
-def _resolve_target_message_thread_id(
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int | None:
-    """Compatibility helper for older call sites."""
-    configured_thread_id_raw = context.application.bot_data.get("message_thread_id")
-    if configured_thread_id_raw is None:
-        return None
-    return int(configured_thread_id_raw)
 
 
 def _remember_runtime_destination(
@@ -136,7 +144,8 @@ async def _reply_with_retry(
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
-    destinations = _resolve_scheduled_destinations(context)
+    chat_ids = _resolve_target_chat_ids(context)
+    message_thread_id = _resolve_target_message_thread_id(context)
 
     try:
         report_date, metrics = await service.build_daily_report()
@@ -145,7 +154,7 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Failed to build report")
         text = f"❌ Не удалось собрать отчет: {exc}"
 
-    for chat_id, message_thread_id in destinations:
+    for chat_id in chat_ids:
         sent = await _send_with_retry(
             context,
             chat_id=chat_id,
@@ -153,14 +162,13 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
             message_thread_id=message_thread_id,
         )
         if sent:
-            context.application.bot_data["runtime_chat_id"] = chat_id
-            if message_thread_id is not None:
-                context.application.bot_data["runtime_message_thread_id"] = message_thread_id
+            if context.application.bot_data.get("runtime_chat_id") != chat_id:
+                context.application.bot_data["runtime_chat_id"] = chat_id
             return
 
     logger.error(
-        "Failed to deliver daily report to any configured destination. Tried destinations=%s",
-        destinations,
+        "Failed to deliver daily report to any configured chat. Tried chat_ids=%s",
+        chat_ids,
     )
 
 
