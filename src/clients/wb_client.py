@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import asyncio
 
 import httpx
 
@@ -11,6 +12,8 @@ class WildberriesClient:
     api_token: str
     stats_url: str = "https://statistics-api.wildberries.ru"
     adv_url: str = "https://advert-api.wildberries.ru"
+    adv_max_retries: int = 3
+    adv_retry_delay_seconds: float = 1.0
 
     async def fetch_metrics(self, report_date: date) -> dict[str, int | float | None]:
         headers = {"Authorization": self.api_token}
@@ -67,7 +70,7 @@ class WildberriesClient:
                 return {"views": None, "clicks": None, "sum": None}
 
             payload = [{"id": cid, "dates": [report_date.isoformat()]} for cid in campaign_ids]
-            stats_resp = await client.post("/adv/v2/fullstats", headers=headers, json=payload)
+            stats_resp = await self._post_adv_fullstats(client, headers, payload)
 
             # Иногда WB возвращает 400, если среди кампаний есть некорректная/архивная.
             # В таком случае пробуем собрать статистику по одной кампании,
@@ -75,16 +78,7 @@ class WildberriesClient:
             if stats_resp.status_code >= 400:
                 return await self._fetch_adv_metrics_fallback(client, headers, report_date, campaign_ids)
 
-            total_views = 0.0
-            total_clicks = 0.0
-            total_sum = 0.0
-            for campaign_stat in stats_resp.json():
-                for day in campaign_stat.get("days", []):
-                    total_views += float(day.get("views", 0))
-                    total_clicks += float(day.get("clicks", 0))
-                    total_sum += float(day.get("sum", 0))
-
-            return {"views": total_views, "clicks": total_clicks, "sum": total_sum}
+            return self._sum_adv_stats(stats_resp.json())
 
     async def _fetch_adv_metrics_fallback(
         self,
@@ -100,20 +94,49 @@ class WildberriesClient:
 
         for campaign_id in campaign_ids:
             payload = [{"id": campaign_id, "dates": [report_date.isoformat()]}]
-            stats_resp = await client.post("/adv/v2/fullstats", headers=headers, json=payload)
+            stats_resp = await self._post_adv_fullstats(client, headers, payload)
+            if stats_resp.status_code == 429:
+                break
             if stats_resp.status_code >= 400:
                 continue
 
             has_data = True
-            for campaign_stat in stats_resp.json():
-                for day in campaign_stat.get("days", []):
-                    total_views += float(day.get("views", 0))
-                    total_clicks += float(day.get("clicks", 0))
-                    total_sum += float(day.get("sum", 0))
+            metrics = self._sum_adv_stats(stats_resp.json())
+            total_views += float(metrics.get("views") or 0)
+            total_clicks += float(metrics.get("clicks") or 0)
+            total_sum += float(metrics.get("sum") or 0)
 
         if not has_data:
             return {"views": None, "clicks": None, "sum": None}
 
+        return {"views": total_views, "clicks": total_clicks, "sum": total_sum}
+
+    async def _post_adv_fullstats(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        payload: list[dict[str, int | list[str]]],
+    ) -> httpx.Response:
+        for attempt in range(self.adv_max_retries):
+            response = await client.post("/adv/v2/fullstats", headers=headers, json=payload)
+            if response.status_code != 429:
+                return response
+
+            if attempt < self.adv_max_retries - 1:
+                await asyncio.sleep(self.adv_retry_delay_seconds * (attempt + 1))
+
+        return response
+
+    @staticmethod
+    def _sum_adv_stats(raw_stats: list[dict]) -> dict[str, float]:
+        total_views = 0.0
+        total_clicks = 0.0
+        total_sum = 0.0
+        for campaign_stat in raw_stats:
+            for day in campaign_stat.get("days", []):
+                total_views += float(day.get("views", 0))
+                total_clicks += float(day.get("clicks", 0))
+                total_sum += float(day.get("sum", 0))
         return {"views": total_views, "clicks": total_clicks, "sum": total_sum}
 
     async def _get_stats(self, path: str, headers: dict[str, str], params: dict[str, str | int]) -> list[dict]:
