@@ -100,8 +100,12 @@ class WildberriesClient:
             if stats_resp.status_code >= 400:
                 continue
 
+            raw_stats = stats_resp.json()
+            if not isinstance(raw_stats, list):
+                continue
+
             has_data = True
-            metrics = self._sum_adv_stats(stats_resp.json())
+            metrics = self._sum_adv_stats(raw_stats)
             total_views += float(metrics.get("views") or 0)
             total_clicks += float(metrics.get("clicks") or 0)
             total_sum += float(metrics.get("sum") or 0)
@@ -128,12 +132,19 @@ class WildberriesClient:
         return response
 
     @staticmethod
-    def _sum_adv_stats(raw_stats: list[dict]) -> dict[str, float]:
+    def _sum_adv_stats(raw_stats: object) -> dict[str, float]:
+        if not isinstance(raw_stats, list):
+            return {"views": 0.0, "clicks": 0.0, "sum": 0.0}
+
         total_views = 0.0
         total_clicks = 0.0
         total_sum = 0.0
         for campaign_stat in raw_stats:
+            if not isinstance(campaign_stat, dict):
+                continue
             for day in campaign_stat.get("days", []):
+                if not isinstance(day, dict):
+                    continue
                 total_views += float(day.get("views", 0))
                 total_clicks += float(day.get("clicks", 0))
                 total_sum += float(day.get("sum", 0))
