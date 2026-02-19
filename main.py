@@ -48,18 +48,33 @@ def _resolve_target_chat_ids(
     return tuple(candidates)
 
 
-def _resolve_target_message_thread_id(
+def _resolve_scheduled_destinations(
     context: ContextTypes.DEFAULT_TYPE,
-) -> int | None:
-    runtime_message_thread_id = context.application.bot_data.get("runtime_message_thread_id")
-    if runtime_message_thread_id is not None:
-        return int(runtime_message_thread_id)
+) -> tuple[tuple[int, int | None], ...]:
+    candidates: list[tuple[int, int | None]] = []
 
-    default_message_thread_id = context.application.bot_data.get("message_thread_id")
-    if default_message_thread_id is None:
-        return None
+    configured_chat_id = int(context.application.bot_data["chat_id"])
+    configured_thread_id_raw = context.application.bot_data.get("message_thread_id")
+    configured_thread_id = (
+        int(configured_thread_id_raw)
+        if configured_thread_id_raw is not None
+        else None
+    )
+    candidates.append((configured_chat_id, configured_thread_id))
 
-    return int(default_message_thread_id)
+    runtime_chat_id_raw = context.application.bot_data.get("runtime_chat_id")
+    if runtime_chat_id_raw is not None:
+        runtime_thread_id_raw = context.application.bot_data.get("runtime_message_thread_id")
+        runtime_thread_id = (
+            int(runtime_thread_id_raw)
+            if runtime_thread_id_raw is not None
+            else None
+        )
+        runtime_destination = (int(runtime_chat_id_raw), runtime_thread_id)
+        if runtime_destination not in candidates:
+            candidates.append(runtime_destination)
+
+    return tuple(candidates)
 
 
 def _remember_runtime_destination(
