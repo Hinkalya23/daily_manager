@@ -61,7 +61,7 @@ python main.py
 ## Важные примечания по API
 
 - Интеграция с Ozon использует Seller API (`https://docs.ozon.ru/api/seller/`).
-- Интеграция с WB использует статистическое, рекламное и seller analytics API (`https://dev.wildberries.ru/`), включая `/api/analytics/v3/sales-funnel/grouped/history` для всех нерекламных метрик WB.
+- Интеграция с WB использует статистическое, рекламное и seller analytics API (`https://dev.wildberries.ru/`), включая `/api/analytics/v3/sales-funnel/products` (с пагинацией) для нерекламных метрик WB и fallback на `/api/analytics/v3/sales-funnel/grouped/history`.
 - Некоторые метрики в разных кабинетах могут требовать дополнительных прав, или отличаться по структуре ответа.
 - Если API не возвращает конкретную метрику, бот покажет `н/д`.
 
