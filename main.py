@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import time
+from datetime import datetime, time
 from time import sleep
 from zoneinfo import ZoneInfo
 
@@ -30,13 +30,22 @@ _TELEGRAM_RETRY_DELAY_SECONDS = 2.0
 _STARTUP_RETRY_DELAY_SECONDS = 5.0
 
 
-def _resolve_target_chat_id(
+
+def _resolve_target_chat_ids(
     context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    dynamic_chat_id = context.application.bot_data.get("runtime_chat_id")
-    if dynamic_chat_id is not None:
-        return int(dynamic_chat_id)
-    return int(context.application.bot_data["chat_id"])
+) -> tuple[int, ...]:
+    candidates: list[int] = []
+
+    for key in ("runtime_chat_id", "chat_id"):
+        value = context.application.bot_data.get(key)
+        if value is None:
+            continue
+
+        chat_id = int(value)
+        if chat_id not in candidates:
+            candidates.append(chat_id)
+
+    return tuple(candidates)
 
 
 def _resolve_target_message_thread_id(
@@ -120,7 +129,7 @@ async def _reply_with_retry(
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
-    chat_id = _resolve_target_chat_id(context)
+    chat_ids = _resolve_target_chat_ids(context)
     message_thread_id = _resolve_target_message_thread_id(context)
 
     try:
@@ -130,12 +139,31 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Failed to build report")
         text = f"❌ Не удалось собрать отчет: {exc}"
 
-    await _send_with_retry(
-        context,
-        chat_id=chat_id,
-        text=text,
-        message_thread_id=message_thread_id,
+    for chat_id in chat_ids:
+        sent = await _send_with_retry(
+            context,
+            chat_id=chat_id,
+            text=text,
+            message_thread_id=message_thread_id,
+        )
+        if sent:
+            if context.application.bot_data.get("runtime_chat_id") != chat_id:
+                context.application.bot_data["runtime_chat_id"] = chat_id
+            return
+
+    logger.error(
+        "Failed to deliver daily report to any configured chat. Tried chat_ids=%s",
+        chat_ids,
     )
+
+
+def _format_schedule_time(context: ContextTypes.DEFAULT_TYPE) -> str:
+    timezone = str(context.application.bot_data["timezone"])
+    report_hour = int(context.application.bot_data["report_hour"])
+    report_minute = int(context.application.bot_data["report_minute"])
+    now = datetime.now(ZoneInfo(timezone))
+    report_time = now.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
+    return f"{report_time:%H:%M} ({timezone})"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -144,7 +172,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _remember_runtime_destination(update, context)
     await _reply_with_retry(
         update,
-        "Привет! Я отправляю ежедневный отчет по Ozon/WB в 10:00.\n"
+        f"Привет! Я отправляю ежедневный отчет по Ozon/WB в {_format_schedule_time(context)}.\n"
         "Команды:\n"
         "/report — отправить отчет сейчас",
     )
@@ -173,6 +201,9 @@ def _build_application(settings: Settings, report_service: ReportService) -> App
     app.bot_data["report_service"] = report_service
     app.bot_data["chat_id"] = settings.telegram_chat_id
     app.bot_data["message_thread_id"] = settings.telegram_message_thread_id
+    app.bot_data["timezone"] = settings.timezone
+    app.bot_data["report_hour"] = settings.report_hour
+    app.bot_data["report_minute"] = settings.report_minute
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("report", report_now))
