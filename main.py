@@ -44,10 +44,15 @@ async def _send_with_retry(
     *,
     chat_id: int,
     text: str,
+    message_thread_id: int | None = None,
 ) -> bool:
     for attempt in range(_TELEGRAM_SEND_RETRIES + 1):
         try:
-            await context.bot.send_message(chat_id=chat_id, text=text)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                message_thread_id=message_thread_id,
+            )
             return True
         except RetryAfter as exc:
             delay = float(exc.retry_after or _TELEGRAM_RETRY_DELAY_SECONDS)
@@ -98,8 +103,17 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Failed to build report")
         text = f"❌ Не удалось собрать отчет: {exc}"
 
-    await _send_with_retry(context, chat_id=chat_id, text=text)
+    await _send_with_retry(
+        context,
+        chat_id=chat_id,
+        text=text,
+        message_thread_id=message_thread_id,
+    )
 
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat is None:
+        return
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None:
@@ -138,6 +152,7 @@ def _build_application(settings: Settings, report_service: ReportService) -> App
     app = Application.builder().token(settings.telegram_bot_token).build()
     app.bot_data["report_service"] = report_service
     app.bot_data["chat_id"] = settings.telegram_chat_id
+    app.bot_data["message_thread_id"] = settings.telegram_message_thread_id
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("report", report_now))
