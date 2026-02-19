@@ -180,10 +180,7 @@ class WildberriesClient:
     ) -> dict[str, float] | None:
         payload = {
             "selectedPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
-            "pastPeriod": {
-                "start": (report_date - timedelta(days=1)).isoformat(),
-                "end": (report_date - timedelta(days=1)).isoformat(),
-            },
+            "pastPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
             "brandNames": self._resolve_brand_names(),
             "subjectIds": self._resolve_ids(self.subject_ids),
             "tagIds": self._resolve_ids(self.tag_ids),
@@ -224,7 +221,7 @@ class WildberriesClient:
             for product_row in products:
                 if not isinstance(product_row, dict):
                     continue
-                statistic = product_row.get("statistic", product_row.get("statistics", {}))
+                statistic = product_row.get("statistic", {})
                 if not isinstance(statistic, dict):
                     continue
                 selected = statistic.get("selected", {})
