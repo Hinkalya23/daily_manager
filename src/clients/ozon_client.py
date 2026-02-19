@@ -19,16 +19,14 @@ class OzonClient:
             "Content-Type": "application/json",
         }
 
-        # Endpoint analytics/data агрегирует метрики по товарам. При необходимости
-        # можно скорректировать dimensions/metrics под вашу категорию и витрину.
         requested_metrics = [
-            "views",  # показы
-            "clicks",  # клики/переходы
-            "to_cart",  # добавление в корзину
-            "orders",  # заказы
-            "revenue",  # сумма заказов
-            "avg_price",  # средний чек
-            "adv_sum",  # рекламные расходы
+            "views",
+            "clicks",
+            "to_cart",
+            "orders",
+            "revenue",
+            "avg_price",
+            "adv_sum",
         ]
 
         payload = {
@@ -46,10 +44,6 @@ class OzonClient:
             json=payload,
         )
 
-        # Для позиции в поиске используем endpoint по видимости/поиску.
-        # В некоторых кабинетах требуется отдельный метод/доступ.
-        search_position = await self._fetch_search_position(headers=headers, report_date=report_date)
-
         totals = self._sum_metrics(metrics_response, fallback_metric_names=requested_metrics)
         return {
             "impressions": totals.get("views"),
@@ -59,27 +53,10 @@ class OzonClient:
             "avg_bill": totals.get("avg_price"),
             "order_sum": totals.get("revenue"),
             "ad_spend": totals.get("adv_sum"),
-            "search_position": search_position,
+            # Убрали запрос к нестабильному endpoint видимости, чтобы избежать 404
+            # и не ломать сбор основного ежедневного отчёта.
+            "search_position": None,
         }
-
-    async def _fetch_search_position(self, headers: dict[str, str], report_date: date) -> str | None:
-        payload = {
-            "date_from": report_date.isoformat(),
-            "date_to": report_date.isoformat(),
-            "limit": 1,
-            "offset": 0,
-        }
-        try:
-            data = await self._post("/v1/product/info/visibility", headers=headers, json=payload)
-            items = data.get("result", {}).get("items", [])
-            if not items:
-                return None
-            first = items[0]
-            search_pos = first.get("position", {}).get("search")
-            catalog_pos = first.get("position", {}).get("category")
-            return f"search: {search_pos}, catalog: {catalog_pos}"
-        except httpx.HTTPError:
-            return None
 
     async def _post(self, path: str, headers: dict[str, str], json: dict) -> dict:
         async with httpx.AsyncClient(base_url=self.base_url, timeout=30.0) as client:
@@ -107,8 +84,6 @@ class OzonClient:
                     continue
                 totals[name] = totals.get(name, 0.0) + numeric
 
-        # В некоторых ответах OZON агрегированные значения могут приходить
-        # в result.totals, даже если result.data пустой.
         if not totals:
             totals_values = result.get("totals", [])
             if len(totals_values) != len(default_metric_names):

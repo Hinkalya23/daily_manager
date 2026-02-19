@@ -17,6 +17,7 @@ class WildberriesClient:
     adv_max_retries: int = 3
     adv_retry_delay_seconds: float = 20.0
     adv_batch_size: int = 50
+    funnel_batch_size: int = 20
 
     async def fetch_metrics(self, report_date: date) -> dict[str, int | float | None]:
         headers = {"Authorization": self.api_token}
@@ -131,55 +132,37 @@ class WildberriesClient:
                 "order_sum": None,
             }
 
-        payload = {
-            "selectedPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
-            "nmIds": nm_ids,
-            "skipDeletedNm": True,
-            "aggregationLevel": "day",
-        }
-        response = await self._post_with_retry(
-            client,
-            f"{self.analytics_url}/api/analytics/v3/sales-funnel/products/history",
-            headers,
-            payload,
-        )
-        if response is None or response.status_code >= 400:
-            return {
-                "clicks": None,
-                "add_to_cart": None,
-                "orders": None,
-                "order_sum": None,
-            }
-
-        raw_data = response.json()
-        if not isinstance(raw_data, list):
-            return {
-                "clicks": None,
-                "add_to_cart": None,
-                "orders": None,
-                "order_sum": None,
-            }
-
-        clicks = 0.0
-        add_to_cart = 0.0
-        orders = 0.0
-        order_sum = 0.0
+        totals = {"clicks": 0.0, "add_to_cart": 0.0, "orders": 0.0, "order_sum": 0.0}
         has_data = False
 
-        for product_row in raw_data:
-            if not isinstance(product_row, dict):
+        for idx in range(0, len(nm_ids), self.funnel_batch_size):
+            batch = nm_ids[idx : idx + self.funnel_batch_size]
+            payload = {
+                "selectedPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
+                "nmIds": batch,
+                "skipDeletedNm": True,
+                "aggregationLevel": "day",
+            }
+            response = await self._post_with_retry(
+                client,
+                f"{self.analytics_url}/api/analytics/v3/sales-funnel/products/history",
+                headers,
+                payload,
+            )
+            if response is None or response.status_code >= 400:
                 continue
-            history = product_row.get("history", [])
-            if not isinstance(history, list):
+
+            raw_data = response.json()
+            if not isinstance(raw_data, list):
                 continue
-            for day_row in history:
-                if not isinstance(day_row, dict):
-                    continue
-                has_data = True
-                clicks += self._extract_number(day_row, "openCardCount", "openCard", "clicks")
-                add_to_cart += self._extract_number(day_row, "addToCartCount", "addToCart", "atbs")
-                orders += self._extract_number(day_row, "ordersCount", "orders", "ordersSumCount")
-                order_sum += self._extract_number(day_row, "ordersSumRub", "ordersSum", "ordersAmount")
+
+            batch_metrics = self._parse_sales_funnel_rows(raw_data)
+            if batch_metrics is None:
+                continue
+
+            has_data = True
+            for key in totals:
+                totals[key] += batch_metrics[key]
 
         if not has_data:
             return {
@@ -189,12 +172,7 @@ class WildberriesClient:
                 "order_sum": None,
             }
 
-        return {
-            "clicks": clicks,
-            "add_to_cart": add_to_cart,
-            "orders": orders,
-            "order_sum": order_sum,
-        }
+        return totals
 
     async def _resolve_nm_ids(
         self,
@@ -203,7 +181,7 @@ class WildberriesClient:
         report_date: date,
     ) -> list[int]:
         if self.nm_ids:
-            return list(self.nm_ids[:20])
+            return list(dict.fromkeys(self.nm_ids))
 
         response = await client.get(
             f"{self.stats_url}/api/v1/supplier/orders",
@@ -226,9 +204,39 @@ class WildberriesClient:
             if isinstance(nm_id, int) and nm_id not in seen:
                 seen.add(nm_id)
                 nm_ids.append(nm_id)
-            if len(nm_ids) >= 20:
-                break
         return nm_ids
+
+    def _parse_sales_funnel_rows(self, raw_data: list[object]) -> dict[str, float] | None:
+        clicks = 0.0
+        add_to_cart = 0.0
+        orders = 0.0
+        order_sum = 0.0
+        has_data = False
+
+        for product_row in raw_data:
+            if not isinstance(product_row, dict):
+                continue
+            history = product_row.get("history", [])
+            if not isinstance(history, list):
+                continue
+            for day_row in history:
+                if not isinstance(day_row, dict):
+                    continue
+                has_data = True
+                clicks += self._extract_number(day_row, "openCardCount", "openCard", "clicks")
+                add_to_cart += self._extract_number(day_row, "addToCartCount", "addToCart", "atbs")
+                orders += self._extract_number(day_row, "ordersCount", "orders", "ordersSumCount")
+                order_sum += self._extract_number(day_row, "ordersSumRub", "ordersSum", "ordersAmount")
+
+        if not has_data:
+            return None
+
+        return {
+            "clicks": clicks,
+            "add_to_cart": add_to_cart,
+            "orders": orders,
+            "order_sum": order_sum,
+        }
 
     async def _get_with_retry(
         self,
@@ -268,6 +276,10 @@ class WildberriesClient:
     def _extract_number(source: dict[str, object], *keys: str) -> float:
         for key in keys:
             value = source.get(key)
+            if isinstance(value, dict):
+                nested = WildberriesClient._extract_number(value, "value", "count", "total")
+                if nested:
+                    return nested
             if value is None:
                 continue
             try:
