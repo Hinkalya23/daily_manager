@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 
@@ -124,6 +124,11 @@ class WildberriesClient:
         headers: dict[str, str],
         report_date: date,
     ) -> dict[str, float | None]:
+        products_metrics = await self._get_sales_funnel_products_metrics(client, headers, report_date)
+        if products_metrics is not None:
+            return products_metrics
+
+        # Fallback to grouped/history in case products endpoint is temporarily unavailable.
         payload = {
             "selectedPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
             "brandNames": self._resolve_brand_names(),
@@ -147,7 +152,8 @@ class WildberriesClient:
             }
 
         raw_data = response.json()
-        if not isinstance(raw_data, list):
+        rows = raw_data.get("data", []) if isinstance(raw_data, dict) else raw_data
+        if not isinstance(rows, list):
             return {
                 "clicks": None,
                 "add_to_cart": None,
@@ -155,7 +161,7 @@ class WildberriesClient:
                 "order_sum": None,
             }
 
-        metrics = self._parse_sales_funnel_rows(raw_data)
+        metrics = self._parse_sales_funnel_rows(rows)
         if metrics is None:
             return {
                 "clicks": None,
@@ -165,6 +171,84 @@ class WildberriesClient:
             }
 
         return metrics
+
+    async def _get_sales_funnel_products_metrics(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        report_date: date,
+    ) -> dict[str, float] | None:
+        payload = {
+            "selectedPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
+            "pastPeriod": {
+                "start": (report_date - timedelta(days=1)).isoformat(),
+                "end": (report_date - timedelta(days=1)).isoformat(),
+            },
+            "brandNames": self._resolve_brand_names(),
+            "subjectIds": self._resolve_ids(self.subject_ids),
+            "tagIds": self._resolve_ids(self.tag_ids),
+            "nmIds": [],
+            "skipDeletedNm": True,
+            "limit": 1000,
+            "offset": 0,
+        }
+
+        clicks = 0.0
+        add_to_cart = 0.0
+        orders = 0.0
+        order_sum = 0.0
+        has_data = False
+
+        while True:
+            response = await self._post_with_retry(
+                client,
+                f"{self.analytics_url}/api/analytics/v3/sales-funnel/products",
+                headers,
+                payload,
+            )
+            if response is None or response.status_code >= 400:
+                return None
+
+            raw_data = response.json()
+            if not isinstance(raw_data, dict):
+                return None
+
+            data = raw_data.get("data", {})
+            if not isinstance(data, dict):
+                return None
+
+            products = data.get("products", [])
+            if not isinstance(products, list):
+                return None
+
+            for product_row in products:
+                if not isinstance(product_row, dict):
+                    continue
+                statistic = product_row.get("statistic", product_row.get("statistics", {}))
+                if not isinstance(statistic, dict):
+                    continue
+                selected = statistic.get("selected", {})
+                if not isinstance(selected, dict):
+                    continue
+                has_data = True
+                clicks += self._extract_number(selected, "openCount", "openCardCount", "openCard", "clicks")
+                add_to_cart += self._extract_number(selected, "cartCount", "addToCartCount", "addToCart", "atbs")
+                orders += self._extract_number(selected, "orderCount", "ordersCount", "orders", "ordersSumCount")
+                order_sum += self._extract_number(selected, "orderSum", "ordersSumRub", "ordersSum", "ordersAmount")
+
+            if len(products) < int(payload["limit"]):
+                break
+            payload["offset"] = int(payload["offset"]) + int(payload["limit"])
+
+        if not has_data:
+            return None
+
+        return {
+            "clicks": clicks,
+            "add_to_cart": add_to_cart,
+            "orders": orders,
+            "order_sum": order_sum,
+        }
 
     def _resolve_brand_names(self) -> list[str]:
         return list(dict.fromkeys(name.strip() for name in self.brand_names if name.strip()))
@@ -190,10 +274,10 @@ class WildberriesClient:
                 if not isinstance(day_row, dict):
                     continue
                 has_data = True
-                clicks += self._extract_number(day_row, "openCardCount", "openCard", "clicks")
-                add_to_cart += self._extract_number(day_row, "addToCartCount", "addToCart", "atbs")
-                orders += self._extract_number(day_row, "ordersCount", "orders", "ordersSumCount")
-                order_sum += self._extract_number(day_row, "ordersSumRub", "ordersSum", "ordersAmount")
+                clicks += self._extract_number(day_row, "openCount", "openCardCount", "openCard", "clicks")
+                add_to_cart += self._extract_number(day_row, "cartCount", "addToCartCount", "addToCart", "atbs")
+                orders += self._extract_number(day_row, "orderCount", "ordersCount", "orders", "ordersSumCount")
+                order_sum += self._extract_number(day_row, "orderSum", "ordersSumRub", "ordersSum", "ordersAmount")
 
         if not has_data:
             return None
