@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_SEND_RETRIES = 2
 _TELEGRAM_RETRY_DELAY_SECONDS = 2.0
-_STARTUP_RETRY_DELAY_SECONDS = 5.0
 
 
 async def _send_with_retry(
@@ -109,6 +108,10 @@ async def report_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         text = f"❌ Не удалось собрать отчет: {exc}"
 
     await _reply_with_retry(update, text)
+
+
+async def on_error(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Unhandled telegram update error", exc_info=context.error)
 
 
 async def on_error(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
