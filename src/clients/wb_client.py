@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date
-import asyncio
 
 import httpx
 
@@ -10,158 +10,268 @@ import httpx
 @dataclass
 class WildberriesClient:
     api_token: str
+    nm_ids: tuple[int, ...] = ()
     stats_url: str = "https://statistics-api.wildberries.ru"
     adv_url: str = "https://advert-api.wildberries.ru"
+    analytics_url: str = "https://seller-analytics-api.wildberries.ru"
     adv_max_retries: int = 3
-    adv_retry_delay_seconds: float = 1.0
-    adv_batch_size: int = 10
+    adv_retry_delay_seconds: float = 20.0
+    adv_batch_size: int = 50
 
     async def fetch_metrics(self, report_date: date) -> dict[str, int | float | None]:
         headers = {"Authorization": self.api_token}
 
-        orders = await self._get_stats(
-            "/api/v1/supplier/orders",
-            headers=headers,
-            params={"dateFrom": report_date.isoformat(), "flag": 0},
-        )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            campaign_ids = await self._get_campaign_ids(client, headers)
 
-        adv_metrics = await self._fetch_adv_metrics(report_date, headers)
+            adv_views = await self._get_adv_views(client, headers, report_date, campaign_ids)
+            adv_spend = await self._get_adv_spend(client, headers, report_date)
 
-        orders_for_day = [item for item in orders if self._is_same_day(item, report_date)]
-        non_cancelled_orders = [item for item in orders_for_day if not bool(item.get("isCancel"))]
+            funnel_stats = await self._get_sales_funnel_metrics(client, headers, report_date)
 
-        orders_count = len(non_cancelled_orders)
-        order_sum = sum(float(item.get("totalPrice", 0)) for item in non_cancelled_orders)
+        orders_count = int(funnel_stats.get("orders") or 0)
+        order_sum = float(funnel_stats.get("order_sum") or 0)
         avg_bill = (order_sum / orders_count) if orders_count else None
 
-        add_to_cart = adv_metrics.get("atbs")
-        if add_to_cart is None:
-            add_to_cart = sum(int(item.get("isCancel", 0) == 0) for item in orders_for_day)
-
-        clicks = adv_metrics.get("clicks")
-        impressions = adv_metrics.get("views")
-        ad_spend = adv_metrics.get("sum")
-
         return {
-            "impressions_ads": impressions,
-            "clicks": clicks,
-            "add_to_cart": add_to_cart,
+            "impressions_ads": adv_views,
+            "clicks": funnel_stats.get("clicks"),
+            "add_to_cart": funnel_stats.get("add_to_cart"),
             "orders": orders_count,
             "avg_bill": avg_bill,
             "order_sum": order_sum,
-            "ad_spend": ad_spend,
+            "ad_spend": adv_spend,
         }
 
-    async def _fetch_adv_metrics(self, report_date: date, headers: dict[str, str]) -> dict[str, float | None]:
-        # В WB рекламная статистика запрашивается через список кампаний + детализацию.
-        # Здесь базовая реализация: если рекламных кампаний нет/нет доступа — возвращаем None.
-        async with httpx.AsyncClient(base_url=self.adv_url, timeout=30.0) as client:
-            campaigns_resp = await client.get("/adv/v1/promotion/count", headers=headers)
-            if campaigns_resp.status_code >= 400:
-                return {"views": None, "clicks": None, "sum": None}
+    async def _get_campaign_ids(self, client: httpx.AsyncClient, headers: dict[str, str]) -> list[int]:
+        response = await client.get(f"{self.adv_url}/adv/v1/promotion/count", headers=headers)
+        if response.status_code >= 400:
+            return []
 
-            campaigns = campaigns_resp.json().get("adverts", [])
-            campaign_ids: list[int] = []
-            for state in campaigns:
-                for campaign in state.get("advert_list", []):
-                    advert_id = campaign.get("advertId")
-                    if isinstance(advert_id, int):
-                        campaign_ids.append(advert_id)
+        payload = response.json()
+        adverts = payload.get("adverts", []) if isinstance(payload, dict) else []
+        campaign_ids: list[int] = []
+        for state in adverts:
+            if not isinstance(state, dict):
+                continue
+            for campaign in state.get("advert_list", []):
+                if not isinstance(campaign, dict):
+                    continue
+                advert_id = campaign.get("advertId")
+                if isinstance(advert_id, int):
+                    campaign_ids.append(advert_id)
+        return campaign_ids
 
-            if not campaign_ids:
-                return {"views": None, "clicks": None, "sum": None}
-
-            return await self._fetch_adv_metrics_fallback(client, headers, report_date, campaign_ids)
-
-    async def _fetch_adv_metrics_fallback(
+    async def _get_adv_views(
         self,
         client: httpx.AsyncClient,
         headers: dict[str, str],
         report_date: date,
         campaign_ids: list[int],
-    ) -> dict[str, float | None]:
-        total_views = 0.0
-        total_clicks = 0.0
-        total_sum = 0.0
-        total_atbs = 0.0
-        has_data = False
+    ) -> float | None:
+        if not campaign_ids:
+            return None
 
+        total_views = 0.0
+        has_data = False
         for idx in range(0, len(campaign_ids), self.adv_batch_size):
             batch = campaign_ids[idx : idx + self.adv_batch_size]
-            payload = [{"id": campaign_id, "dates": [report_date.isoformat()]} for campaign_id in batch]
-            stats_resp = await self._post_adv_fullstats(client, headers, payload)
-            if stats_resp.status_code == 429:
-                break
-            if stats_resp.status_code >= 400:
+            params = {
+                "ids": ",".join(str(campaign_id) for campaign_id in batch),
+                "beginDate": report_date.isoformat(),
+                "endDate": report_date.isoformat(),
+            }
+            response = await self._get_with_retry(client, f"{self.adv_url}/adv/v3/fullstats", headers, params)
+            if response is None or response.status_code >= 400:
                 continue
 
-            raw_stats = stats_resp.json()
+            raw_stats = response.json()
             if not isinstance(raw_stats, list):
                 continue
 
             has_data = True
-            metrics = self._sum_adv_stats(raw_stats)
-            total_views += float(metrics.get("views") or 0)
-            total_clicks += float(metrics.get("clicks") or 0)
-            total_sum += float(metrics.get("sum") or 0)
-            total_atbs += float(metrics.get("atbs") or 0)
+            for row in raw_stats:
+                if not isinstance(row, dict):
+                    continue
+                total_views += float(row.get("views", 0) or 0)
 
         if not has_data:
-            return {"views": None, "clicks": None, "sum": None, "atbs": None}
+            return None
+        return total_views
 
-        return {"views": total_views, "clicks": total_clicks, "sum": total_sum, "atbs": total_atbs}
-
-    async def _post_adv_fullstats(
+    async def _get_adv_spend(
         self,
         client: httpx.AsyncClient,
         headers: dict[str, str],
-        payload: list[dict[str, int | list[str]]],
-    ) -> httpx.Response:
+        report_date: date,
+    ) -> float | None:
+        params = {"from": report_date.isoformat(), "to": report_date.isoformat()}
+        response = await self._get_with_retry(client, f"{self.adv_url}/adv/v1/upd", headers, params)
+        if response is None or response.status_code >= 400:
+            return None
+
+        raw_stats = response.json()
+        if not isinstance(raw_stats, list):
+            return None
+
+        return sum(float(row.get("updSum", 0) or 0) for row in raw_stats if isinstance(row, dict))
+
+    async def _get_sales_funnel_metrics(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        report_date: date,
+    ) -> dict[str, float | None]:
+        nm_ids = await self._resolve_nm_ids(client, headers, report_date)
+        if not nm_ids:
+            return {
+                "clicks": None,
+                "add_to_cart": None,
+                "orders": None,
+                "order_sum": None,
+            }
+
+        payload = {
+            "selectedPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
+            "nmIds": nm_ids,
+            "skipDeletedNm": True,
+            "aggregationLevel": "day",
+        }
+        response = await self._post_with_retry(
+            client,
+            f"{self.analytics_url}/api/analytics/v3/sales-funnel/products/history",
+            headers,
+            payload,
+        )
+        if response is None or response.status_code >= 400:
+            return {
+                "clicks": None,
+                "add_to_cart": None,
+                "orders": None,
+                "order_sum": None,
+            }
+
+        raw_data = response.json()
+        if not isinstance(raw_data, list):
+            return {
+                "clicks": None,
+                "add_to_cart": None,
+                "orders": None,
+                "order_sum": None,
+            }
+
+        clicks = 0.0
+        add_to_cart = 0.0
+        orders = 0.0
+        order_sum = 0.0
+        has_data = False
+
+        for product_row in raw_data:
+            if not isinstance(product_row, dict):
+                continue
+            history = product_row.get("history", [])
+            if not isinstance(history, list):
+                continue
+            for day_row in history:
+                if not isinstance(day_row, dict):
+                    continue
+                has_data = True
+                clicks += self._extract_number(day_row, "openCardCount", "openCard", "clicks")
+                add_to_cart += self._extract_number(day_row, "addToCartCount", "addToCart", "atbs")
+                orders += self._extract_number(day_row, "ordersCount", "orders", "ordersSumCount")
+                order_sum += self._extract_number(day_row, "ordersSumRub", "ordersSum", "ordersAmount")
+
+        if not has_data:
+            return {
+                "clicks": None,
+                "add_to_cart": None,
+                "orders": None,
+                "order_sum": None,
+            }
+
+        return {
+            "clicks": clicks,
+            "add_to_cart": add_to_cart,
+            "orders": orders,
+            "order_sum": order_sum,
+        }
+
+    async def _resolve_nm_ids(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        report_date: date,
+    ) -> list[int]:
+        if self.nm_ids:
+            return list(self.nm_ids[:20])
+
+        response = await client.get(
+            f"{self.stats_url}/api/v1/supplier/orders",
+            headers=headers,
+            params={"dateFrom": report_date.isoformat(), "flag": 0},
+        )
+        if response.status_code >= 400:
+            return []
+
+        data = response.json()
+        if not isinstance(data, list):
+            return []
+
+        nm_ids: list[int] = []
+        seen: set[int] = set()
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            nm_id = row.get("nmId")
+            if isinstance(nm_id, int) and nm_id not in seen:
+                seen.add(nm_id)
+                nm_ids.append(nm_id)
+            if len(nm_ids) >= 20:
+                break
+        return nm_ids
+
+    async def _get_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, str],
+    ) -> httpx.Response | None:
+        response: httpx.Response | None = None
         for attempt in range(self.adv_max_retries):
-            response = await client.post("/adv/v2/fullstats", headers=headers, json=payload)
+            response = await client.get(url, headers=headers, params=params)
             if response.status_code != 429:
                 return response
 
             if attempt < self.adv_max_retries - 1:
-                await asyncio.sleep(self.adv_retry_delay_seconds * (attempt + 1))
+                await asyncio.sleep(self.adv_retry_delay_seconds)
+        return response
 
+    async def _post_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, object],
+    ) -> httpx.Response | None:
+        response: httpx.Response | None = None
+        for attempt in range(self.adv_max_retries):
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code != 429:
+                return response
+
+            if attempt < self.adv_max_retries - 1:
+                await asyncio.sleep(self.adv_retry_delay_seconds)
         return response
 
     @staticmethod
-    def _sum_adv_stats(raw_stats: object) -> dict[str, float]:
-        if not isinstance(raw_stats, list):
-            return {"views": 0.0, "clicks": 0.0, "sum": 0.0, "atbs": 0.0}
-
-        total_views = 0.0
-        total_clicks = 0.0
-        total_sum = 0.0
-        total_atbs = 0.0
-        for campaign_stat in raw_stats:
-            if not isinstance(campaign_stat, dict):
+    def _extract_number(source: dict[str, object], *keys: str) -> float:
+        for key in keys:
+            value = source.get(key)
+            if value is None:
                 continue
-            for day in campaign_stat.get("days", []):
-                if not isinstance(day, dict):
-                    continue
-                total_views += float(day.get("views", 0))
-                total_clicks += float(day.get("clicks", 0))
-                total_sum += float(day.get("sum", 0))
-                total_atbs += float(day.get("atbs", 0))
-        return {"views": total_views, "clicks": total_clicks, "sum": total_sum, "atbs": total_atbs}
-
-    async def _get_stats(self, path: str, headers: dict[str, str], params: dict[str, str | int]) -> list[dict]:
-        async with httpx.AsyncClient(base_url=self.stats_url, timeout=30.0) as client:
-            response = await client.get(path, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
-            return data if isinstance(data, list) else []
-
-    @staticmethod
-    def _is_same_day(row: dict, report_date: date) -> bool:
-        date_candidates = ("date", "lastChangeDate", "saleDT")
-        for key in date_candidates:
-            raw_value = row.get(key)
-            if not isinstance(raw_value, str):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
                 continue
-            if raw_value[:10] == report_date.isoformat():
-                return True
-        return False
+        return 0.0

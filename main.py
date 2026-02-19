@@ -65,7 +65,10 @@ def main() -> None:
         client_id=settings.ozon_client_id,
         api_key=settings.ozon_api_key,
     )
-    wb = WildberriesClient(api_token=settings.wb_api_token)
+    wb = WildberriesClient(
+        api_token=settings.wb_api_token,
+        nm_ids=settings.wb_nm_ids,
+    )
     report_service = ReportService(
         ozon=ozon,
         wb=wb,
