@@ -91,12 +91,15 @@ class OzonClient:
     def _sum_metrics(raw: dict, fallback_metric_names: list[str]) -> dict[str, float]:
         result = raw.get("result", {})
         rows = result.get("data", [])
-        default_metric_names = OzonClient._extract_metric_names(result.get("metrics", [])) or fallback_metric_names
+        response_metric_names = OzonClient._extract_metric_names(result.get("metrics", []))
+        default_metric_names = response_metric_names or fallback_metric_names
         totals: dict[str, float] = {}
 
         for row in rows:
             metric_values = row.get("metrics", [])
-            metric_names = row.get("metric_names", default_metric_names)
+            metric_names = row.get("metric_names") or default_metric_names
+            if len(metric_names) != len(metric_values):
+                continue
             for name, value in zip(metric_names, metric_values):
                 try:
                     numeric = float(value)
@@ -108,6 +111,8 @@ class OzonClient:
         # в result.totals, даже если result.data пустой.
         if not totals:
             totals_values = result.get("totals", [])
+            if len(totals_values) != len(default_metric_names):
+                return totals
             for name, value in zip(default_metric_names, totals_values):
                 try:
                     totals[name] = float(value)
@@ -121,10 +126,35 @@ class OzonClient:
         names: list[str] = []
         for metric in raw_metrics:
             if isinstance(metric, str):
-                names.append(metric)
+                normalized = OzonClient._normalize_metric_name(metric)
+                if normalized is not None:
+                    names.append(normalized)
                 continue
             if isinstance(metric, dict):
-                metric_name = metric.get("key") or metric.get("name")
-                if isinstance(metric_name, str):
-                    names.append(metric_name)
+                metric_name = metric.get("key") or metric.get("name") or metric.get("metric")
+                normalized = OzonClient._normalize_metric_name(metric_name)
+                if normalized is not None:
+                    names.append(normalized)
         return names
+
+    @staticmethod
+    def _normalize_metric_name(metric_name: object) -> str | None:
+        if not isinstance(metric_name, str):
+            return None
+
+        aliases = {
+            "views": "views",
+            "view": "views",
+            "show": "views",
+            "clicks": "clicks",
+            "to_cart": "to_cart",
+            "orders": "orders",
+            "revenue": "revenue",
+            "avg_price": "avg_price",
+            "adv_sum": "adv_sum",
+            "sum": "revenue",
+            "sales_sum": "revenue",
+        }
+
+        key = metric_name.strip().lower()
+        return aliases.get(key)

@@ -14,15 +14,11 @@ class WildberriesClient:
     adv_url: str = "https://advert-api.wildberries.ru"
     adv_max_retries: int = 3
     adv_retry_delay_seconds: float = 1.0
+    adv_batch_size: int = 10
 
     async def fetch_metrics(self, report_date: date) -> dict[str, int | float | None]:
         headers = {"Authorization": self.api_token}
 
-        sales = await self._get_stats(
-            "/api/v1/supplier/sales",
-            headers=headers,
-            params={"dateFrom": report_date.isoformat(), "flag": 0},
-        )
         orders = await self._get_stats(
             "/api/v1/supplier/orders",
             headers=headers,
@@ -31,11 +27,17 @@ class WildberriesClient:
 
         adv_metrics = await self._fetch_adv_metrics(report_date, headers)
 
-        orders_count = len(orders)
-        order_sum = sum(float(item.get("totalPrice", 0)) for item in orders)
+        orders_for_day = [item for item in orders if self._is_same_day(item, report_date)]
+        non_cancelled_orders = [item for item in orders_for_day if not bool(item.get("isCancel"))]
+
+        orders_count = len(non_cancelled_orders)
+        order_sum = sum(float(item.get("totalPrice", 0)) for item in non_cancelled_orders)
         avg_bill = (order_sum / orders_count) if orders_count else None
 
-        add_to_cart = sum(int(item.get("isCancel", 0) == 0) for item in orders)
+        add_to_cart = adv_metrics.get("atbs")
+        if add_to_cart is None:
+            add_to_cart = sum(int(item.get("isCancel", 0) == 0) for item in orders_for_day)
+
         clicks = adv_metrics.get("clicks")
         impressions = adv_metrics.get("views")
         ad_spend = adv_metrics.get("sum")
@@ -69,16 +71,7 @@ class WildberriesClient:
             if not campaign_ids:
                 return {"views": None, "clicks": None, "sum": None}
 
-            payload = [{"id": cid, "dates": [report_date.isoformat()]} for cid in campaign_ids]
-            stats_resp = await self._post_adv_fullstats(client, headers, payload)
-
-            # Иногда WB возвращает 400, если среди кампаний есть некорректная/архивная.
-            # В таком случае пробуем собрать статистику по одной кампании,
-            # чтобы не терять данные полностью.
-            if stats_resp.status_code >= 400:
-                return await self._fetch_adv_metrics_fallback(client, headers, report_date, campaign_ids)
-
-            return self._sum_adv_stats(stats_resp.json())
+            return await self._fetch_adv_metrics_fallback(client, headers, report_date, campaign_ids)
 
     async def _fetch_adv_metrics_fallback(
         self,
@@ -90,10 +83,12 @@ class WildberriesClient:
         total_views = 0.0
         total_clicks = 0.0
         total_sum = 0.0
+        total_atbs = 0.0
         has_data = False
 
-        for campaign_id in campaign_ids:
-            payload = [{"id": campaign_id, "dates": [report_date.isoformat()]}]
+        for idx in range(0, len(campaign_ids), self.adv_batch_size):
+            batch = campaign_ids[idx : idx + self.adv_batch_size]
+            payload = [{"id": campaign_id, "dates": [report_date.isoformat()]} for campaign_id in batch]
             stats_resp = await self._post_adv_fullstats(client, headers, payload)
             if stats_resp.status_code == 429:
                 break
@@ -109,11 +104,12 @@ class WildberriesClient:
             total_views += float(metrics.get("views") or 0)
             total_clicks += float(metrics.get("clicks") or 0)
             total_sum += float(metrics.get("sum") or 0)
+            total_atbs += float(metrics.get("atbs") or 0)
 
         if not has_data:
-            return {"views": None, "clicks": None, "sum": None}
+            return {"views": None, "clicks": None, "sum": None, "atbs": None}
 
-        return {"views": total_views, "clicks": total_clicks, "sum": total_sum}
+        return {"views": total_views, "clicks": total_clicks, "sum": total_sum, "atbs": total_atbs}
 
     async def _post_adv_fullstats(
         self,
@@ -134,11 +130,12 @@ class WildberriesClient:
     @staticmethod
     def _sum_adv_stats(raw_stats: object) -> dict[str, float]:
         if not isinstance(raw_stats, list):
-            return {"views": 0.0, "clicks": 0.0, "sum": 0.0}
+            return {"views": 0.0, "clicks": 0.0, "sum": 0.0, "atbs": 0.0}
 
         total_views = 0.0
         total_clicks = 0.0
         total_sum = 0.0
+        total_atbs = 0.0
         for campaign_stat in raw_stats:
             if not isinstance(campaign_stat, dict):
                 continue
@@ -148,7 +145,8 @@ class WildberriesClient:
                 total_views += float(day.get("views", 0))
                 total_clicks += float(day.get("clicks", 0))
                 total_sum += float(day.get("sum", 0))
-        return {"views": total_views, "clicks": total_clicks, "sum": total_sum}
+                total_atbs += float(day.get("atbs", 0))
+        return {"views": total_views, "clicks": total_clicks, "sum": total_sum, "atbs": total_atbs}
 
     async def _get_stats(self, path: str, headers: dict[str, str], params: dict[str, str | int]) -> list[dict]:
         async with httpx.AsyncClient(base_url=self.stats_url, timeout=30.0) as client:
@@ -156,3 +154,14 @@ class WildberriesClient:
             response.raise_for_status()
             data = response.json()
             return data if isinstance(data, list) else []
+
+    @staticmethod
+    def _is_same_day(row: dict, report_date: date) -> bool:
+        date_candidates = ("date", "lastChangeDate", "saleDT")
+        for key in date_candidates:
+            raw_value = row.get(key)
+            if not isinstance(raw_value, str):
+                continue
+            if raw_value[:10] == report_date.isoformat():
+                return True
+        return False
