@@ -21,19 +21,21 @@ class OzonClient:
 
         # Endpoint analytics/data агрегирует метрики по товарам. При необходимости
         # можно скорректировать dimensions/metrics под вашу категорию и витрину.
+        requested_metrics = [
+            "views",  # показы
+            "clicks",  # клики/переходы
+            "to_cart",  # добавление в корзину
+            "orders",  # заказы
+            "revenue",  # сумма заказов
+            "avg_price",  # средний чек
+            "adv_sum",  # рекламные расходы
+        ]
+
         payload = {
             "date_from": report_date.isoformat(),
             "date_to": report_date.isoformat(),
             "dimension": ["sku"],
-            "metrics": [
-                "views",  # показы
-                "clicks",  # клики/переходы
-                "to_cart",  # добавление в корзину
-                "orders",  # заказы
-                "revenue",  # сумма заказов
-                "avg_price",  # средний чек
-                "adv_sum",  # рекламные расходы
-            ],
+            "metrics": requested_metrics,
             "limit": 1000,
             "offset": 0,
         }
@@ -48,7 +50,7 @@ class OzonClient:
         # В некоторых кабинетах требуется отдельный метод/доступ.
         search_position = await self._fetch_search_position(headers=headers, report_date=report_date)
 
-        totals = self._sum_metrics(metrics_response)
+        totals = self._sum_metrics(metrics_response, fallback_metric_names=requested_metrics)
         return {
             "impressions": totals.get("views"),
             "clicks": totals.get("clicks"),
@@ -86,10 +88,10 @@ class OzonClient:
             return response.json()
 
     @staticmethod
-    def _sum_metrics(raw: dict) -> dict[str, float]:
+    def _sum_metrics(raw: dict, fallback_metric_names: list[str]) -> dict[str, float]:
         result = raw.get("result", {})
         rows = result.get("data", [])
-        default_metric_names = result.get("metrics", [])
+        default_metric_names = OzonClient._extract_metric_names(result.get("metrics", [])) or fallback_metric_names
         totals: dict[str, float] = {}
 
         for row in rows:
@@ -102,4 +104,27 @@ class OzonClient:
                     continue
                 totals[name] = totals.get(name, 0.0) + numeric
 
+        # В некоторых ответах OZON агрегированные значения могут приходить
+        # в result.totals, даже если result.data пустой.
+        if not totals:
+            totals_values = result.get("totals", [])
+            for name, value in zip(default_metric_names, totals_values):
+                try:
+                    totals[name] = float(value)
+                except (TypeError, ValueError):
+                    continue
+
         return totals
+
+    @staticmethod
+    def _extract_metric_names(raw_metrics: list[object]) -> list[str]:
+        names: list[str] = []
+        for metric in raw_metrics:
+            if isinstance(metric, str):
+                names.append(metric)
+                continue
+            if isinstance(metric, dict):
+                metric_name = metric.get("key") or metric.get("name")
+                if isinstance(metric_name, str):
+                    names.append(metric_name)
+        return names
