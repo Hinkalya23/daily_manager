@@ -30,37 +30,13 @@ _TELEGRAM_RETRY_DELAY_SECONDS = 2.0
 _STARTUP_RETRY_DELAY_SECONDS = 5.0
 
 
-def _resolve_target_destination(
+def _resolve_target_chat_id(
     context: ContextTypes.DEFAULT_TYPE,
-) -> tuple[int, int | None]:
+) -> int:
     dynamic_chat_id = context.application.bot_data.get("runtime_chat_id")
-    dynamic_thread_id = context.application.bot_data.get("runtime_message_thread_id")
-
-    chat_id = (
-        int(dynamic_chat_id)
-        if dynamic_chat_id is not None
-        else int(context.application.bot_data["chat_id"])
-    )
-
-    if dynamic_thread_id is not None:
-        return chat_id, int(dynamic_thread_id)
-
-    return chat_id, context.application.bot_data.get("message_thread_id")
-
-
-def _remember_runtime_destination(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if update.effective_chat is None:
-        return
-
-    context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
-
-    if update.effective_message is not None:
-        context.application.bot_data["runtime_message_thread_id"] = (
-            update.effective_message.message_thread_id
-        )
+    if dynamic_chat_id is not None:
+        return int(dynamic_chat_id)
+    return int(context.application.bot_data["chat_id"])
 
 
 async def _send_with_retry(
@@ -83,11 +59,7 @@ async def _send_with_retry(
             logger.warning("Telegram requested retry after %.1fs", delay)
             await asyncio.sleep(delay)
         except BadRequest:
-            logger.exception(
-                "Telegram rejected message for chat_id=%s, message_thread_id=%s",
-                chat_id,
-                message_thread_id,
-            )
+            logger.exception("Telegram rejected message for chat_id=%s", chat_id)
             return False
         except (TimedOut, NetworkError):
             if attempt >= _TELEGRAM_SEND_RETRIES:
@@ -122,9 +94,7 @@ async def _reply_with_retry(
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
-    chat_id: int
-    message_thread_id: int | None
-    chat_id, message_thread_id = _resolve_target_destination(context)
+    chat_id = _resolve_target_chat_id(context)
 
     try:
         report_date, metrics = await service.build_daily_report()
@@ -142,7 +112,14 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    _remember_runtime_destination(update, context)
+    if update.effective_chat is None:
+        return
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat is None:
+        return
+
+    context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
     await _reply_with_retry(
         update,
         "Привет! Я отправляю ежедневный отчет по Ozon/WB в 10:00.\n"
@@ -154,6 +131,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def report_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
     _remember_runtime_destination(update, context)
+
+    if update.effective_chat is not None:
+        context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
 
     try:
         report_date, metrics = await service.build_daily_report()
