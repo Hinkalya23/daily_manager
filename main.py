@@ -130,6 +130,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def report_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
+    _remember_runtime_destination(update, context)
 
     if update.effective_chat is not None:
         context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
