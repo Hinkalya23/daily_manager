@@ -123,7 +123,7 @@ class WildberriesClient:
         headers: dict[str, str],
         report_date: date,
     ) -> dict[str, float | None]:
-        nm_ids = await self._resolve_nm_ids(client, headers, report_date)
+        nm_ids = self._resolve_nm_ids()
         if not nm_ids:
             return {
                 "clicks": None,
@@ -174,37 +174,10 @@ class WildberriesClient:
 
         return totals
 
-    async def _resolve_nm_ids(
-        self,
-        client: httpx.AsyncClient,
-        headers: dict[str, str],
-        report_date: date,
-    ) -> list[int]:
-        if self.nm_ids:
-            return list(dict.fromkeys(self.nm_ids))
-
-        response = await client.get(
-            f"{self.stats_url}/api/v1/supplier/orders",
-            headers=headers,
-            params={"dateFrom": report_date.isoformat(), "flag": 0},
-        )
-        if response.status_code >= 400:
+    def _resolve_nm_ids(self) -> list[int]:
+        if not self.nm_ids:
             return []
-
-        data = response.json()
-        if not isinstance(data, list):
-            return []
-
-        nm_ids: list[int] = []
-        seen: set[int] = set()
-        for row in data:
-            if not isinstance(row, dict):
-                continue
-            nm_id = row.get("nmId")
-            if isinstance(nm_id, int) and nm_id not in seen:
-                seen.add(nm_id)
-                nm_ids.append(nm_id)
-        return nm_ids
+        return list(dict.fromkeys(self.nm_ids))
 
     def _parse_sales_funnel_rows(self, raw_data: list[object]) -> dict[str, float] | None:
         clicks = 0.0
