@@ -40,6 +40,7 @@ cp .env.example .env
 
 - `TELEGRAM_BOT_TOKEN` — токен бота от @BotFather
 - `TELEGRAM_CHAT_ID` — ID чата, куда слать отчет
+- `TELEGRAM_MESSAGE_THREAD_ID` — ID топика (message thread) в Telegram-чате; если не задан, бот шлет в основной чат
 - `TIMEZONE` — таймзона (по умолчанию `Europe/Moscow`)
 - `REPORT_HOUR`, `REPORT_MINUTE` — время ежедневной отправки (по умолчанию 10:00)
 - `OZON_CLIENT_ID`, `OZON_API_KEY` — доступы к Seller API Ozon
