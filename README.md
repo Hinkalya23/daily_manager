@@ -1,6 +1,6 @@
 # daily_manager
 
-Telegram-бот на Python, который каждый день в **10:00** отправляет отчет по метрикам маркетплейсов **Ozon** и **Wildberries**.
+Telegram-бот на Python, который каждый день в настроенное время отправляет отчет по метрикам маркетплейсов **Ozon** и **Wildberries**.
 
 ## Что отправляет бот
 
@@ -40,7 +40,7 @@ cp .env.example .env
 
 - `TELEGRAM_BOT_TOKEN` — токен бота от @BotFather
 - `TELEGRAM_CHAT_ID` — ID чата, куда слать отчет
-- `TELEGRAM_MESSAGE_THREAD_ID` — ID топика (message thread) в Telegram-чате; если не задан, бот шлет в основной чат
+- `TELEGRAM_MESSAGE_THREAD_ID` — ID топика (message thread) в Telegram-чате; если задан, ежедневный отчет отправляется именно в этот топик
 - `TIMEZONE` — таймзона (по умолчанию `Europe/Moscow`)
 - `REPORT_HOUR`, `REPORT_MINUTE` — время ежедневной отправки (по умолчанию 10:00)
 - `OZON_CLIENT_ID`, `OZON_API_KEY` — доступы к Seller API Ozon
