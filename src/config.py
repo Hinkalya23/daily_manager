@@ -16,6 +16,7 @@ class Settings:
     ozon_client_id: str
     ozon_api_key: str
     wb_api_token: str
+    wb_nm_ids: tuple[int, ...]
     report_days_back: int
 
     @staticmethod
@@ -31,6 +32,7 @@ class Settings:
             ozon_client_id=_require("OZON_CLIENT_ID"),
             ozon_api_key=_require("OZON_API_KEY"),
             wb_api_token=_require("WB_API_TOKEN"),
+            wb_nm_ids=_parse_int_list(os.getenv("WB_NM_IDS", "")),
             report_days_back=int(os.getenv("REPORT_DAYS_BACK", "1")),
         )
 
@@ -40,3 +42,16 @@ def _require(key: str) -> str:
     if not value:
         raise ValueError(f"Missing required environment variable: {key}")
     return value
+
+
+def _parse_int_list(raw_value: str) -> tuple[int, ...]:
+    if not raw_value.strip():
+        return tuple()
+
+    result: list[int] = []
+    for chunk in raw_value.split(","):
+        value = chunk.strip()
+        if not value:
+            continue
+        result.append(int(value))
+    return tuple(result)
