@@ -44,7 +44,7 @@ cp .env.example .env
 - `REPORT_HOUR`, `REPORT_MINUTE` — время ежедневной отправки (по умолчанию 10:00)
 - `OZON_CLIENT_ID`, `OZON_API_KEY` — доступы к Seller API Ozon
 - `WB_API_TOKEN` — токен WB API
-- `WB_NM_IDS` — список артикулов WB через запятую для воронки продаж (обязателен для метрик WB, кроме рекламных)
+- `WB_BRAND_NAMES`, `WB_SUBJECT_IDS`, `WB_TAG_IDS` — фильтры grouped-воронки WB (через запятую, можно оставить пустыми для всех карточек)
 - `REPORT_DAYS_BACK` — за какой день брать отчет (1 = вчера)
 
 ## Запуск
@@ -61,7 +61,7 @@ python main.py
 ## Важные примечания по API
 
 - Интеграция с Ozon использует Seller API (`https://docs.ozon.ru/api/seller/`).
-- Интеграция с WB использует статистическое и рекламное API (`https://dev.wildberries.ru/`).
+- Интеграция с WB использует статистическое, рекламное и seller analytics API (`https://dev.wildberries.ru/`), включая `/api/analytics/v3/sales-funnel/grouped/history` для всех нерекламных метрик WB.
 - Некоторые метрики в разных кабинетах могут требовать дополнительных прав, или отличаться по структуре ответа.
 - Если API не возвращает конкретную метрику, бот покажет `н/д`.
 
