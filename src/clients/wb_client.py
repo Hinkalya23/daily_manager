@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 
@@ -152,7 +152,8 @@ class WildberriesClient:
             }
 
         raw_data = response.json()
-        if not isinstance(raw_data, list):
+        rows = raw_data.get("data", []) if isinstance(raw_data, dict) else raw_data
+        if not isinstance(rows, list):
             return {
                 "clicks": None,
                 "add_to_cart": None,
@@ -160,7 +161,7 @@ class WildberriesClient:
                 "order_sum": None,
             }
 
-        metrics = self._parse_sales_funnel_rows(raw_data)
+        metrics = self._parse_sales_funnel_rows(rows)
         if metrics is None:
             return {
                 "clicks": None,
