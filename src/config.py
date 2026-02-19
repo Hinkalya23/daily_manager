@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 class Settings:
     telegram_bot_token: str
     telegram_chat_id: int
+    telegram_message_thread_id: int | None
     timezone: str
     report_hour: int
     report_minute: int
@@ -28,6 +29,9 @@ class Settings:
         return Settings(
             telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=int(_require("TELEGRAM_CHAT_ID")),
+            telegram_message_thread_id=_parse_optional_int(
+                os.getenv("TELEGRAM_MESSAGE_THREAD_ID")
+            ),
             timezone=os.getenv("TIMEZONE", "Europe/Moscow"),
             report_hour=int(os.getenv("REPORT_HOUR", "10")),
             report_minute=int(os.getenv("REPORT_MINUTE", "0")),
@@ -46,6 +50,16 @@ def _require(key: str) -> str:
     if not value:
         raise ValueError(f"Missing required environment variable: {key}")
     return value
+
+
+def _parse_optional_int(raw_value: str | None) -> int | None:
+    if raw_value is None:
+        return None
+
+    value = raw_value.strip()
+    if not value:
+        return None
+    return int(value)
 
 
 def _parse_int_list(raw_value: str) -> tuple[int, ...]:
