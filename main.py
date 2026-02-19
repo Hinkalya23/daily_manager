@@ -7,7 +7,7 @@ from time import sleep
 from zoneinfo import ZoneInfo
 
 from telegram import Update
-from telegram.error import NetworkError, RetryAfter, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_SEND_RETRIES = 2
 _TELEGRAM_RETRY_DELAY_SECONDS = 2.0
+_STARTUP_RETRY_DELAY_SECONDS = 5.0
+
+
+def _resolve_target_chat_id(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    dynamic_chat_id = context.application.bot_data.get("runtime_chat_id")
+    if dynamic_chat_id is not None:
+        return int(dynamic_chat_id)
+    return int(context.application.bot_data["chat_id"])
 
 
 async def _send_with_retry(
@@ -43,6 +53,9 @@ async def _send_with_retry(
             delay = float(exc.retry_after or _TELEGRAM_RETRY_DELAY_SECONDS)
             logger.warning("Telegram requested retry after %.1fs", delay)
             await asyncio.sleep(delay)
+        except BadRequest:
+            logger.exception("Telegram rejected message for chat_id=%s", chat_id)
+            return False
         except (TimedOut, NetworkError):
             if attempt >= _TELEGRAM_SEND_RETRIES:
                 logger.exception("Failed to send Telegram message after retries")
@@ -76,7 +89,7 @@ async def _reply_with_retry(
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
-    chat_id: int = context.application.bot_data["chat_id"]
+    chat_id = _resolve_target_chat_id(context)
 
     try:
         report_date, metrics = await service.build_daily_report()
@@ -88,7 +101,11 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_with_retry(context, chat_id=chat_id, text=text)
 
 
-async def start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_chat is None:
+        return
+
+    context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
     await _reply_with_retry(
         update,
         "Привет! Я отправляю ежедневный отчет по Ozon/WB в 10:00.\n"
@@ -100,6 +117,9 @@ async def start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 async def report_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
 
+    if update.effective_chat is not None:
+        context.application.bot_data["runtime_chat_id"] = update.effective_chat.id
+
     try:
         report_date, metrics = await service.build_daily_report()
         text = metrics.to_telegram_text(report_date)
@@ -108,10 +128,6 @@ async def report_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         text = f"❌ Не удалось собрать отчет: {exc}"
 
     await _reply_with_retry(update, text)
-
-
-async def on_error(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.exception("Unhandled telegram update error", exc_info=context.error)
 
 
 async def on_error(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
