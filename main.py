@@ -144,8 +144,7 @@ async def _reply_with_retry(
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     service: ReportService = context.application.bot_data["report_service"]
-    chat_ids = _resolve_target_chat_ids(context)
-    message_thread_id = _resolve_target_message_thread_id(context)
+    destinations = _resolve_scheduled_destinations(context)
 
     try:
         report_date, metrics = await service.build_daily_report()
@@ -154,7 +153,7 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Failed to build report")
         text = f"❌ Не удалось собрать отчет: {exc}"
 
-    for chat_id in chat_ids:
+    for chat_id, message_thread_id in destinations:
         sent = await _send_with_retry(
             context,
             chat_id=chat_id,
@@ -167,8 +166,8 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
     logger.error(
-        "Failed to deliver daily report to any configured chat. Tried chat_ids=%s",
-        chat_ids,
+        "Failed to deliver daily report to any configured destination. Tried=%s",
+        destinations,
     )
 
 
