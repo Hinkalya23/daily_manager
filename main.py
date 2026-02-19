@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import time
+from time import sleep
 from zoneinfo import ZoneInfo
 
 from telegram import Update
@@ -113,6 +114,31 @@ async def on_error(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Unhandled telegram update error", exc_info=context.error)
 
 
+async def on_error(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Unhandled telegram update error", exc_info=context.error)
+
+
+def _build_application(settings: Settings, report_service: ReportService) -> Application:
+    app = Application.builder().token(settings.telegram_bot_token).build()
+    app.bot_data["report_service"] = report_service
+    app.bot_data["chat_id"] = settings.telegram_chat_id
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("report", report_now))
+    app.add_error_handler(on_error)
+
+    app.job_queue.run_daily(
+        callback=send_daily_report,
+        time=time(
+            hour=settings.report_hour,
+            minute=settings.report_minute,
+            tzinfo=ZoneInfo(settings.timezone),
+        ),
+        name="daily-sales-report",
+    )
+    return app
+
+
 def main() -> None:
     settings = Settings.from_env()
 
@@ -132,24 +158,6 @@ def main() -> None:
         report_days_back=settings.report_days_back,
     )
 
-    app = Application.builder().token(settings.telegram_bot_token).build()
-    app.bot_data["report_service"] = report_service
-    app.bot_data["chat_id"] = settings.telegram_chat_id
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("report", report_now))
-    app.add_error_handler(on_error)
-
-    app.job_queue.run_daily(
-        callback=send_daily_report,
-        time=time(
-            hour=settings.report_hour,
-            minute=settings.report_minute,
-            tzinfo=ZoneInfo(settings.timezone),
-        ),
-        name="daily-sales-report",
-    )
-
     logger.info(
         "Bot started. Daily report scheduled at %02d:%02d %s",
         settings.report_hour,
@@ -157,7 +165,17 @@ def main() -> None:
         settings.timezone,
     )
 
-    app.run_polling(close_loop=False)
+    while True:
+        app = _build_application(settings, report_service)
+        try:
+            app.run_polling(close_loop=False)
+            return
+        except (TimedOut, NetworkError):
+            logger.exception(
+                "Telegram initialization failed due to network timeout. Retrying in %.1f seconds",
+                _STARTUP_RETRY_DELAY_SECONDS,
+            )
+            sleep(_STARTUP_RETRY_DELAY_SECONDS)
 
 
 if __name__ == "__main__":
