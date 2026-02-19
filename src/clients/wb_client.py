@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import httpx
@@ -18,7 +18,13 @@ class WildberriesClient:
     analytics_url: str = "https://seller-analytics-api.wildberries.ru"
     adv_max_retries: int = 3
     adv_retry_delay_seconds: float = 20.0
+    request_delay_seconds: float = 1.0
     adv_batch_size: int = 50
+    _last_request_time: float | None = None
+    _request_lock: asyncio.Lock = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._request_lock = asyncio.Lock()
 
     async def fetch_metrics(self, report_date: date) -> dict[str, int | float | None]:
         headers = {"Authorization": self.api_token}
@@ -295,7 +301,7 @@ class WildberriesClient:
     ) -> httpx.Response | None:
         response: httpx.Response | None = None
         for attempt in range(self.adv_max_retries):
-            response = await client.get(url, headers=headers, params=params)
+            response = await self._throttled_get(client, url, headers=headers, params=params)
             if response.status_code != 429:
                 return response
 
@@ -312,13 +318,48 @@ class WildberriesClient:
     ) -> httpx.Response | None:
         response: httpx.Response | None = None
         for attempt in range(self.adv_max_retries):
-            response = await client.post(url, headers=headers, json=payload)
+            response = await self._throttled_post(client, url, headers=headers, json=payload)
             if response.status_code != 429:
                 return response
 
             if attempt < self.adv_max_retries - 1:
                 await asyncio.sleep(self.adv_retry_delay_seconds)
         return response
+
+    async def _throttled_get(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, str],
+    ) -> httpx.Response:
+        await self._wait_for_request_slot()
+        return await client.get(url, headers=headers, params=params)
+
+    async def _throttled_post(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, object],
+    ) -> httpx.Response:
+        await self._wait_for_request_slot()
+        return await client.post(url, headers=headers, json=json)
+
+    async def _wait_for_request_slot(self) -> None:
+        if self.request_delay_seconds <= 0:
+            return
+
+        async with self._request_lock:
+            now = asyncio.get_running_loop().time()
+            if self._last_request_time is not None:
+                elapsed = now - self._last_request_time
+                wait_seconds = self.request_delay_seconds - elapsed
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
+            self._last_request_time = asyncio.get_running_loop().time()
 
     @staticmethod
     def _extract_number(source: dict[str, object], *keys: str) -> float:
