@@ -10,14 +10,15 @@ import httpx
 @dataclass
 class WildberriesClient:
     api_token: str
-    nm_ids: tuple[int, ...] = ()
+    brand_names: tuple[str, ...] = ()
+    subject_ids: tuple[int, ...] = ()
+    tag_ids: tuple[int, ...] = ()
     stats_url: str = "https://statistics-api.wildberries.ru"
     adv_url: str = "https://advert-api.wildberries.ru"
     analytics_url: str = "https://seller-analytics-api.wildberries.ru"
     adv_max_retries: int = 3
     adv_retry_delay_seconds: float = 20.0
     adv_batch_size: int = 50
-    funnel_batch_size: int = 20
 
     async def fetch_metrics(self, report_date: date) -> dict[str, int | float | None]:
         headers = {"Authorization": self.api_token}
@@ -123,8 +124,21 @@ class WildberriesClient:
         headers: dict[str, str],
         report_date: date,
     ) -> dict[str, float | None]:
-        nm_ids = self._resolve_nm_ids()
-        if not nm_ids:
+        payload = {
+            "selectedPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
+            "brandNames": self._resolve_brand_names(),
+            "subjectIds": self._resolve_ids(self.subject_ids),
+            "tagIds": self._resolve_ids(self.tag_ids),
+            "skipDeletedNm": True,
+            "aggregationLevel": "day",
+        }
+        response = await self._post_with_retry(
+            client,
+            f"{self.analytics_url}/api/analytics/v3/sales-funnel/grouped/history",
+            headers,
+            payload,
+        )
+        if response is None or response.status_code >= 400:
             return {
                 "clicks": None,
                 "add_to_cart": None,
@@ -132,39 +146,8 @@ class WildberriesClient:
                 "order_sum": None,
             }
 
-        totals = {"clicks": 0.0, "add_to_cart": 0.0, "orders": 0.0, "order_sum": 0.0}
-        has_data = False
-
-        for idx in range(0, len(nm_ids), self.funnel_batch_size):
-            batch = nm_ids[idx : idx + self.funnel_batch_size]
-            payload = {
-                "selectedPeriod": {"start": report_date.isoformat(), "end": report_date.isoformat()},
-                "nmIds": batch,
-                "skipDeletedNm": True,
-                "aggregationLevel": "day",
-            }
-            response = await self._post_with_retry(
-                client,
-                f"{self.analytics_url}/api/analytics/v3/sales-funnel/products/history",
-                headers,
-                payload,
-            )
-            if response is None or response.status_code >= 400:
-                continue
-
-            raw_data = response.json()
-            if not isinstance(raw_data, list):
-                continue
-
-            batch_metrics = self._parse_sales_funnel_rows(raw_data)
-            if batch_metrics is None:
-                continue
-
-            has_data = True
-            for key in totals:
-                totals[key] += batch_metrics[key]
-
-        if not has_data:
+        raw_data = response.json()
+        if not isinstance(raw_data, list):
             return {
                 "clicks": None,
                 "add_to_cart": None,
@@ -172,12 +155,23 @@ class WildberriesClient:
                 "order_sum": None,
             }
 
-        return totals
+        metrics = self._parse_sales_funnel_rows(raw_data)
+        if metrics is None:
+            return {
+                "clicks": None,
+                "add_to_cart": None,
+                "orders": None,
+                "order_sum": None,
+            }
 
-    def _resolve_nm_ids(self) -> list[int]:
-        if not self.nm_ids:
-            return []
-        return list(dict.fromkeys(self.nm_ids))
+        return metrics
+
+    def _resolve_brand_names(self) -> list[str]:
+        return list(dict.fromkeys(name.strip() for name in self.brand_names if name.strip()))
+
+    @staticmethod
+    def _resolve_ids(values: tuple[int, ...]) -> list[int]:
+        return list(dict.fromkeys(values))
 
     def _parse_sales_funnel_rows(self, raw_data: list[object]) -> dict[str, float] | None:
         clicks = 0.0

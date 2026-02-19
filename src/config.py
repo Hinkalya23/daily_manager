@@ -16,7 +16,9 @@ class Settings:
     ozon_client_id: str
     ozon_api_key: str
     wb_api_token: str
-    wb_nm_ids: tuple[int, ...]
+    wb_brand_names: tuple[str, ...]
+    wb_subject_ids: tuple[int, ...]
+    wb_tag_ids: tuple[int, ...]
     report_days_back: int
 
     @staticmethod
@@ -32,7 +34,9 @@ class Settings:
             ozon_client_id=_require("OZON_CLIENT_ID"),
             ozon_api_key=_require("OZON_API_KEY"),
             wb_api_token=_require("WB_API_TOKEN"),
-            wb_nm_ids=_parse_int_list(os.getenv("WB_NM_IDS", "")),
+            wb_brand_names=_parse_str_list(os.getenv("WB_BRAND_NAMES", "")),
+            wb_subject_ids=_parse_int_list(os.getenv("WB_SUBJECT_IDS", "")),
+            wb_tag_ids=_parse_int_list(os.getenv("WB_TAG_IDS", "")),
             report_days_back=int(os.getenv("REPORT_DAYS_BACK", "1")),
         )
 
@@ -54,4 +58,16 @@ def _parse_int_list(raw_value: str) -> tuple[int, ...]:
         if not value:
             continue
         result.append(int(value))
+    return tuple(result)
+
+
+def _parse_str_list(raw_value: str) -> tuple[str, ...]:
+    if not raw_value.strip():
+        return tuple()
+
+    result: list[str] = []
+    for chunk in raw_value.split(","):
+        value = chunk.strip()
+        if value:
+            result.append(value)
     return tuple(result)
