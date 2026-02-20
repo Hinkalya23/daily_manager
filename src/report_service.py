@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
 
 from src.clients.ozon_client import OzonClient
 from src.clients.wb_client import WildberriesClient
 from src.metrics import DailyMetrics
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -17,8 +20,8 @@ class ReportService:
     async def build_daily_report(self) -> tuple[str, DailyMetrics]:
         report_date = date.today() - timedelta(days=self.report_days_back)
 
-        ozon_data = await self.ozon.fetch_metrics(report_date)
-        wb_data = await self.wb.fetch_metrics(report_date)
+        ozon_data = await self._safe_fetch_ozon(report_date)
+        wb_data = await self._safe_fetch_wb(report_date)
 
         report = DailyMetrics(
             ozon_impressions=_to_int(ozon_data.get("impressions")),
@@ -43,6 +46,20 @@ class ReportService:
         )
 
         return report_date.isoformat(), report
+
+    async def _safe_fetch_ozon(self, report_date: date) -> dict[str, int | float | str | None]:
+        try:
+            return await self.ozon.fetch_metrics(report_date)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to fetch Ozon metrics")
+            return {}
+
+    async def _safe_fetch_wb(self, report_date: date) -> dict[str, int | float | None]:
+        try:
+            return await self.wb.fetch_metrics(report_date)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to fetch Wildberries metrics")
+            return {}
 
 
 def _to_int(value: object | None) -> int | None:
