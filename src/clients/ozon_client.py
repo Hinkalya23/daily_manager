@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -141,33 +144,57 @@ class OzonClient:
 
     @staticmethod
     def _sum_metrics(raw: dict, fallback_metric_names: list[str]) -> dict[str, float]:
-        result = raw.get("result", {})
-        rows = result.get("data", [])
+        if not isinstance(raw, dict):
+            return {}
+
+        result = raw.get("result") if isinstance(raw.get("result"), dict) else raw
+        rows = result.get("data", []) if isinstance(result, dict) else []
         response_metric_names = OzonClient._extract_metric_names(result.get("metrics", []))
         default_metric_names = response_metric_names or fallback_metric_names
         totals: dict[str, float] = {}
 
         for row in rows:
-            metric_values = row.get("metrics", [])
-            metric_names = row.get("metric_names") or default_metric_names
-            if len(metric_names) != len(metric_values):
+            if not isinstance(row, dict):
                 continue
-            for name, value in zip(metric_names, metric_values):
-                try:
-                    numeric = float(value)
-                except (TypeError, ValueError):
-                    continue
-                totals[name] = totals.get(name, 0.0) + numeric
+            row_metrics = row.get("metrics", [])
+            if isinstance(row_metrics, dict):
+                for name, value in row_metrics.items():
+                    OzonClient._add_metric(totals, name, value)
+                continue
 
-        if not totals:
-            totals_values = result.get("totals", [])
-            if len(totals_values) != len(default_metric_names):
-                return totals
-            for name, value in zip(default_metric_names, totals_values):
-                try:
-                    totals[name] = float(value)
-                except (TypeError, ValueError):
-                    continue
+            if row_metrics and isinstance(row_metrics[0], dict):
+                for metric in row_metrics:
+                    metric_name = metric.get("key") or metric.get("name") or metric.get("metric")
+                    metric_value = metric.get("value")
+                    OzonClient._add_metric(totals, metric_name, metric_value)
+                continue
+
+            metric_names = row.get("metric_names") or default_metric_names
+            if len(metric_names) != len(row_metrics):
+                continue
+            for name, value in zip(metric_names, row_metrics):
+                OzonClient._add_metric(totals, name, value)
+
+        if totals:
+            return totals
+
+        totals_values = result.get("totals", []) if isinstance(result, dict) else []
+        if isinstance(totals_values, dict):
+            for name, value in totals_values.items():
+                OzonClient._add_metric(totals, name, value)
+            return totals
+
+        if totals_values and isinstance(totals_values[0], dict):
+            for metric in totals_values:
+                metric_name = metric.get("key") or metric.get("name") or metric.get("metric")
+                metric_value = metric.get("value")
+                OzonClient._add_metric(totals, metric_name, metric_value)
+            return totals
+
+        if len(totals_values) != len(default_metric_names):
+            return totals
+        for name, value in zip(default_metric_names, totals_values):
+            OzonClient._add_metric(totals, name, value)
 
         return totals
 
