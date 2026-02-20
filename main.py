@@ -241,6 +241,8 @@ def main() -> None:
     ozon = OzonClient(
         client_id=settings.ozon_client_id,
         api_key=settings.ozon_api_key,
+        performance_client_id=settings.ozon_performance_client_id,
+        performance_client_secret=settings.ozon_performance_client_secret,
     )
     wb = WildberriesClient(
         api_token=settings.wb_api_token,
