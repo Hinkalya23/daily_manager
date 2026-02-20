@@ -16,6 +16,8 @@ class Settings:
     report_minute: int
     ozon_client_id: str
     ozon_api_key: str
+    ozon_performance_client_id: str | None
+    ozon_performance_client_secret: str | None
     wb_api_token: str
     wb_brand_names: tuple[str, ...]
     wb_subject_ids: tuple[int, ...]
@@ -38,6 +40,12 @@ class Settings:
             report_minute=int(os.getenv("REPORT_MINUTE", "0")),
             ozon_client_id=_require("OZON_CLIENT_ID"),
             ozon_api_key=_require("OZON_API_KEY"),
+            ozon_performance_client_id=_parse_optional_str(
+                os.getenv("OZON_PERFORMANCE_CLIENT_ID")
+            ),
+            ozon_performance_client_secret=_parse_optional_str(
+                os.getenv("OZON_PERFORMANCE_CLIENT_SECRET")
+            ),
             wb_api_token=_require("WB_API_TOKEN"),
             wb_brand_names=_parse_str_list(os.getenv("WB_BRAND_NAMES", "")),
             wb_subject_ids=_parse_int_list(os.getenv("WB_SUBJECT_IDS", "")),
@@ -62,6 +70,16 @@ def _parse_optional_int(raw_value: str | None) -> int | None:
     if not value:
         return None
     return int(value)
+
+
+def _parse_optional_str(raw_value: str | None) -> str | None:
+    if raw_value is None:
+        return None
+
+    value = raw_value.strip()
+    if not value:
+        return None
+    return value
 
 
 def _parse_int_list(raw_value: str) -> tuple[int, ...]:
