@@ -13,7 +13,7 @@ class WildberriesClient:
     brand_names: tuple[str, ...] = ()
     subject_ids: tuple[int, ...] = ()
     tag_ids: tuple[int, ...] = ()
-    campaign_name_symbol: str = "!"
+    campaign_name_prefix: str = "!"
     stats_url: str = "https://statistics-api.wildberries.ru"
     adv_url: str = "https://advert-api.wildberries.ru"
     analytics_url: str = "https://seller-analytics-api.wildberries.ru"
@@ -68,7 +68,7 @@ class WildberriesClient:
                     continue
                 advert_id = campaign.get("advertId")
                 campaign_name = self._extract_campaign_name(campaign)
-                if isinstance(advert_id, int) and self._campaign_matches_symbol(campaign_name):
+                if isinstance(advert_id, int) and self._campaign_matches_prefix(campaign_name):
                     campaign_ids.append(advert_id)
         return campaign_ids
 
@@ -144,12 +144,11 @@ class WildberriesClient:
         return ""
 
 
-    def _campaign_matches_symbol(self, campaign_name: str) -> bool:
-        symbol = self.campaign_name_symbol.strip()
-        if not symbol:
+    def _campaign_matches_prefix(self, campaign_name: str) -> bool:
+        prefix = self.campaign_name_prefix.strip()
+        if not prefix:
             return True
-        campaign_name_clean = campaign_name.lstrip()
-        return campaign_name_clean.startswith(symbol)
+        return campaign_name.startswith(prefix)
 
     @staticmethod
     def _extract_campaign_id(row: dict[str, object]) -> int | None:
