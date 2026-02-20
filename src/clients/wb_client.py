@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 
 import httpx
 
@@ -13,6 +13,7 @@ class WildberriesClient:
     brand_names: tuple[str, ...] = ()
     subject_ids: tuple[int, ...] = ()
     tag_ids: tuple[int, ...] = ()
+    ad_campaign_prefix: str = "!"
     stats_url: str = "https://statistics-api.wildberries.ru"
     adv_url: str = "https://advert-api.wildberries.ru"
     analytics_url: str = "https://seller-analytics-api.wildberries.ru"
@@ -33,7 +34,7 @@ class WildberriesClient:
             campaign_ids = await self._get_campaign_ids(client, headers)
 
             adv_views = await self._get_adv_views(client, headers, report_date, campaign_ids)
-            adv_spend = await self._get_adv_spend(client, headers, report_date)
+            adv_spend = await self._get_adv_spend(client, headers, report_date, campaign_ids)
 
             funnel_stats = await self._get_sales_funnel_metrics(client, headers, report_date)
 
@@ -52,23 +53,32 @@ class WildberriesClient:
         }
 
     async def _get_campaign_ids(self, client: httpx.AsyncClient, headers: dict[str, str]) -> list[int]:
-        response = await client.get(f"{self.adv_url}/adv/v1/promotion/count", headers=headers)
-        if response.status_code >= 400:
+        params = {"statuses": "7,9,11"}
+        response = await self._get_with_retry(
+            client,
+            f"{self.adv_url}/api/advert/v2/adverts",
+            headers,
+            params,
+        )
+        if response is None or response.status_code >= 400:
             return []
 
         payload = response.json()
         adverts = payload.get("adverts", []) if isinstance(payload, dict) else []
-        campaign_ids: list[int] = []
-        for state in adverts:
-            if not isinstance(state, dict):
+
+        selected_ids: list[int] = []
+        for advert in adverts:
+            if not isinstance(advert, dict):
                 continue
-            for campaign in state.get("advert_list", []):
-                if not isinstance(campaign, dict):
-                    continue
-                advert_id = campaign.get("advertId")
-                if isinstance(advert_id, int):
-                    campaign_ids.append(advert_id)
-        return campaign_ids
+
+            advert_id = advert.get("id")
+            if not isinstance(advert_id, int):
+                continue
+
+            if self._campaign_matches_prefix(advert):
+                selected_ids.append(advert_id)
+
+        return selected_ids
 
     async def _get_adv_views(
         self,
@@ -78,7 +88,7 @@ class WildberriesClient:
         campaign_ids: list[int],
     ) -> float | None:
         if not campaign_ids:
-            return None
+            return 0.0
 
         total_views = 0.0
         has_data = False
@@ -112,7 +122,12 @@ class WildberriesClient:
         client: httpx.AsyncClient,
         headers: dict[str, str],
         report_date: date,
+        campaign_ids: list[int],
     ) -> float | None:
+        if not campaign_ids:
+            return 0.0
+
+        selected_ids = set(campaign_ids)
         params = {"from": report_date.isoformat(), "to": report_date.isoformat()}
         response = await self._get_with_retry(client, f"{self.adv_url}/adv/v1/upd", headers, params)
         if response is None or response.status_code >= 400:
@@ -122,7 +137,11 @@ class WildberriesClient:
         if not isinstance(raw_stats, list):
             return None
 
-        return sum(float(row.get("updSum", 0) or 0) for row in raw_stats if isinstance(row, dict))
+        return sum(
+            float(row.get("updSum", 0) or 0)
+            for row in raw_stats
+            if isinstance(row, dict) and int(row.get("advertId", 0) or 0) in selected_ids
+        )
 
     async def _get_sales_funnel_metrics(
         self,
@@ -259,6 +278,21 @@ class WildberriesClient:
     @staticmethod
     def _resolve_ids(values: tuple[int, ...]) -> list[int]:
         return list(dict.fromkeys(values))
+
+    def _campaign_matches_prefix(self, advert: dict[str, object]) -> bool:
+        prefix = self.ad_campaign_prefix
+        if not prefix:
+            return True
+
+        settings = advert.get("settings", {})
+        if not isinstance(settings, dict):
+            return False
+
+        name = settings.get("name", "")
+        if not isinstance(name, str):
+            return False
+
+        return name.lstrip().startswith(prefix)
 
     def _parse_sales_funnel_rows(self, raw_data: list[object]) -> dict[str, float] | None:
         clicks = 0.0

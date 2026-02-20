@@ -247,6 +247,7 @@ def main() -> None:
         brand_names=settings.wb_brand_names,
         subject_ids=settings.wb_subject_ids,
         tag_ids=settings.wb_tag_ids,
+        ad_campaign_prefix=settings.wb_ad_campaign_prefix,
     )
     report_service = ReportService(
         ozon=ozon,

@@ -20,6 +20,7 @@ class Settings:
     wb_brand_names: tuple[str, ...]
     wb_subject_ids: tuple[int, ...]
     wb_tag_ids: tuple[int, ...]
+    wb_ad_campaign_prefix: str
     report_days_back: int
 
     @staticmethod
@@ -41,6 +42,7 @@ class Settings:
             wb_brand_names=_parse_str_list(os.getenv("WB_BRAND_NAMES", "")),
             wb_subject_ids=_parse_int_list(os.getenv("WB_SUBJECT_IDS", "")),
             wb_tag_ids=_parse_int_list(os.getenv("WB_TAG_IDS", "")),
+            wb_ad_campaign_prefix=os.getenv("WB_AD_CAMPAIGN_PREFIX", "!").strip(),
             report_days_back=int(os.getenv("REPORT_DAYS_BACK", "1")),
         )
 
