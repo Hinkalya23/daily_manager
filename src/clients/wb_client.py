@@ -13,6 +13,7 @@ class WildberriesClient:
     brand_names: tuple[str, ...] = ()
     subject_ids: tuple[int, ...] = ()
     tag_ids: tuple[int, ...] = ()
+    campaign_name_symbol: str = "!"
     stats_url: str = "https://statistics-api.wildberries.ru"
     adv_url: str = "https://advert-api.wildberries.ru"
     analytics_url: str = "https://seller-analytics-api.wildberries.ru"
@@ -33,7 +34,7 @@ class WildberriesClient:
             campaign_ids = await self._get_campaign_ids(client, headers)
 
             adv_views = await self._get_adv_views(client, headers, report_date, campaign_ids)
-            adv_spend = await self._get_adv_spend(client, headers, report_date)
+            adv_spend = await self._get_adv_spend(client, headers, report_date, campaign_ids)
 
             funnel_stats = await self._get_sales_funnel_metrics(client, headers, report_date)
 
@@ -58,16 +59,33 @@ class WildberriesClient:
 
         payload = response.json()
         adverts = payload.get("adverts", []) if isinstance(payload, dict) else []
-        campaign_ids: list[int] = []
+        all_campaign_ids: list[int] = []
+        matched_campaign_ids: list[int] = []
         for state in adverts:
             if not isinstance(state, dict):
                 continue
             for campaign in state.get("advert_list", []):
                 if not isinstance(campaign, dict):
                     continue
-                advert_id = campaign.get("advertId")
-                if isinstance(advert_id, int):
-                    campaign_ids.append(advert_id)
+                advert_id = self._extract_campaign_id(campaign)
+                if advert_id is None:
+                    continue
+
+                all_campaign_ids.append(advert_id)
+
+                campaign_name = self._extract_campaign_name(campaign)
+                if not campaign_name:
+                    # Some WB responses do not include campaign names in this endpoint.
+                    # Keep the campaign to avoid dropping all ad metrics to н/д.
+                    matched_campaign_ids.append(advert_id)
+                    continue
+
+                if self._campaign_matches_symbol(campaign_name):
+                    matched_campaign_ids.append(advert_id)
+
+        # Fallback: if symbol-filtered subset is empty, use all campaigns so ad metrics
+        # are still collected for payloads where names are missing or inconsistent.
+        campaign_ids = matched_campaign_ids or all_campaign_ids
         return campaign_ids
 
     async def _get_adv_views(
@@ -112,7 +130,11 @@ class WildberriesClient:
         client: httpx.AsyncClient,
         headers: dict[str, str],
         report_date: date,
+        campaign_ids: list[int],
     ) -> float | None:
+        if not campaign_ids:
+            return None
+
         params = {"from": report_date.isoformat(), "to": report_date.isoformat()}
         response = await self._get_with_retry(client, f"{self.adv_url}/adv/v1/upd", headers, params)
         if response is None or response.status_code >= 400:
@@ -122,7 +144,38 @@ class WildberriesClient:
         if not isinstance(raw_stats, list):
             return None
 
-        return sum(float(row.get("updSum", 0) or 0) for row in raw_stats if isinstance(row, dict))
+        campaign_ids_set = set(campaign_ids)
+        return sum(
+            float(row.get("updSum", 0) or 0)
+            for row in raw_stats
+            if isinstance(row, dict) and self._extract_campaign_id(row) in campaign_ids_set
+        )
+
+    @staticmethod
+    def _extract_campaign_name(campaign: dict[str, object]) -> str:
+        for key in ("name", "advertName", "campaignName", "advert_nm"):
+            raw_name = campaign.get(key)
+            if raw_name is not None:
+                return str(raw_name).strip()
+        return ""
+
+
+    def _campaign_matches_symbol(self, campaign_name: str) -> bool:
+        symbol = self.campaign_name_symbol.strip()
+        if not symbol:
+            return True
+        campaign_name_clean = campaign_name.lstrip()
+        return campaign_name_clean.startswith(symbol)
+
+    @staticmethod
+    def _extract_campaign_id(row: dict[str, object]) -> int | None:
+        for key in ("advertId", "advertsId", "campaignId", "advert_id"):
+            value = row.get(key)
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                continue
+        return None
 
     async def _get_sales_funnel_metrics(
         self,
