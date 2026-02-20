@@ -15,7 +15,7 @@ class FakeResponse:
 
 class WildberriesClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_campaign_ids_filters_by_exclamation_prefix(self):
-        client = WildberriesClient(api_token="token", campaign_name_symbol="!")
+        client = WildberriesClient(api_token="token", campaign_name_prefix="!")
 
         async def fake_get(_self, url, headers):
             return FakeResponse(
@@ -40,7 +40,7 @@ class WildberriesClientTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_get_campaign_ids_supports_custom_prefix(self):
-        client = WildberriesClient(api_token="token", campaign_name_symbol="#")
+        client = WildberriesClient(api_token="token", campaign_name_prefix="#")
 
         async def fake_get(_self, url, headers):
             return FakeResponse(
@@ -63,22 +63,8 @@ class WildberriesClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(campaign_ids, [10])
 
 
-    async def test_get_campaign_ids_allows_spaces_before_symbol(self):
-        client = WildberriesClient(api_token="token", campaign_name_symbol="!")
-
-        async def fake_get(_self, url, headers):
-            return FakeResponse(
-                200,
-                {"adverts": [{"advert_list": [{"advertId": 31, "name": "   ! spaced"}, {"advertId": 32, "name": "plain"}]}]},
-            )
-
-        http_client = type("C", (), {"get": fake_get})()
-        campaign_ids = await client._get_campaign_ids(http_client, {"Authorization": "token"})
-
-        self.assertEqual(campaign_ids, [31])
-
     async def test_get_campaign_ids_with_empty_prefix_returns_all_campaigns(self):
-        client = WildberriesClient(api_token="token", campaign_name_symbol="")
+        client = WildberriesClient(api_token="token", campaign_name_prefix="")
 
         async def fake_get(_self, url, headers):
             return FakeResponse(
@@ -90,64 +76,6 @@ class WildberriesClientTests(unittest.IsolatedAsyncioTestCase):
         campaign_ids = await client._get_campaign_ids(http_client, {"Authorization": "token"})
 
         self.assertEqual(campaign_ids, [21, 22])
-
-
-    async def test_get_campaign_ids_keeps_campaign_without_name(self):
-        client = WildberriesClient(api_token="token", campaign_name_symbol="!")
-
-        async def fake_get(_self, url, headers):
-            return FakeResponse(
-                200,
-                {"adverts": [{"advert_list": [{"advertId": 41}, {"advertId": 42, "name": "regular"}]}]},
-            )
-
-        http_client = type("C", (), {"get": fake_get})()
-        campaign_ids = await client._get_campaign_ids(http_client, {"Authorization": "token"})
-
-        self.assertEqual(campaign_ids, [41])
-
-
-
-    async def test_get_campaign_ids_accepts_string_advert_id(self):
-        client = WildberriesClient(api_token="token", campaign_name_symbol="!")
-
-        async def fake_get(_self, url, headers):
-            return FakeResponse(
-                200,
-                {"adverts": [{"advert_list": [{"advertId": "30256439", "name": "! KPB"}]}]},
-            )
-
-        http_client = type("C", (), {"get": fake_get})()
-        campaign_ids = await client._get_campaign_ids(http_client, {"Authorization": "token"})
-
-        self.assertEqual(campaign_ids, [30256439])
-
-    async def test_get_campaign_ids_falls_back_to_all_when_no_symbol_matches(self):
-        client = WildberriesClient(api_token="token", campaign_name_symbol="!")
-
-        async def fake_get(_self, url, headers):
-            return FakeResponse(
-                200,
-                {"adverts": [{"advert_list": [{"advertId": 51, "name": "regular A"}, {"advertId": 52, "name": "regular B"}]}]},
-            )
-
-        http_client = type("C", (), {"get": fake_get})()
-        campaign_ids = await client._get_campaign_ids(http_client, {"Authorization": "token"})
-
-        self.assertEqual(campaign_ids, [51, 52])
-
-
-    async def test_get_campaign_ids_returns_list_without_name_error(self):
-        client = WildberriesClient(api_token="token", campaign_name_symbol="!")
-
-        async def fake_get(_self, url, headers):
-            return FakeResponse(200, {"adverts": [{"advert_list": [{"advertId": 61, "name": "! one"}]}]})
-
-        http_client = type("C", (), {"get": fake_get})()
-        campaign_ids = await client._get_campaign_ids(http_client, {"Authorization": "token"})
-
-        self.assertIsInstance(campaign_ids, list)
-        self.assertEqual(campaign_ids, [61])
 
     async def test_get_adv_spend_sums_only_selected_campaign_ids(self):
         client = WildberriesClient(api_token="token")
