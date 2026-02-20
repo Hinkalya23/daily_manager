@@ -59,7 +59,8 @@ class WildberriesClient:
 
         payload = response.json()
         adverts = payload.get("adverts", []) if isinstance(payload, dict) else []
-        campaign_ids: list[int] = []
+        all_campaign_ids: list[int] = []
+        matched_campaign_ids: list[int] = []
         for state in adverts:
             if not isinstance(state, dict):
                 continue
