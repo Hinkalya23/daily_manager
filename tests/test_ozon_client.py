@@ -35,16 +35,3 @@ def test_sum_metrics_with_object_totals():
     assert totals["hits_view"] == 120
     assert totals["ordered_units"] == 4
     assert totals["revenue"] == 2000
-
-
-def test_sum_expense_with_nested_cost_key():
-    raw = {
-        "rows": [
-            {"campaignId": 1, "stats": {"cost": 120.5}},
-            {"campaignId": 2, "stats": {"cost": 79.5}},
-        ]
-    }
-
-    total = OzonClient._sum_expense(raw)
-
-    assert total == 200.0

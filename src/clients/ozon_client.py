@@ -20,50 +20,21 @@ class OzonClient:
 
     async def fetch_metrics(self, report_date: date) -> dict[str, int | float | str | None]:
         analytics_totals = await self._fetch_sales_funnel_metrics(report_date)
-
-        impressions = self._pick_metric(analytics_totals, "hits_view", "views", "view", "show")
-        clicks = self._pick_metric(analytics_totals, "session_view_pdp", "clicks")
-        add_to_cart = self._pick_metric(
-            analytics_totals,
-            "hits_tocart_pdp",
-            "to_cart",
-            "hits_tocart",
-        )
-        orders = self._pick_metric(analytics_totals, "ordered_units", "orders")
-        revenue = self._pick_metric(analytics_totals, "revenue", "sales_sum", "sum")
-        search_position = self._pick_metric(analytics_totals, "position_category")
-
-        legacy_totals: dict[str, float] = {}
-        if all(value is None for value in (impressions, clicks, add_to_cart, orders, revenue, search_position)):
-            logger.info("Ozon funnel metrics are empty; retrying with legacy analytics metrics")
-            legacy_totals = await self._fetch_legacy_metrics(report_date)
-            impressions = self._pick_metric(legacy_totals, "views", "view", "show")
-            clicks = self._pick_metric(legacy_totals, "clicks")
-            add_to_cart = self._pick_metric(legacy_totals, "to_cart", "hits_tocart")
-            orders = self._pick_metric(legacy_totals, "orders", "ordered_units")
-            revenue = self._pick_metric(legacy_totals, "revenue", "sales_sum", "sum")
-            if search_position is None:
-                search_position = self._pick_metric(legacy_totals, "position_category")
-
+        orders = analytics_totals.get("ordered_units")
+        revenue = analytics_totals.get("revenue")
         avg_bill = None
-        if orders is not None and revenue is not None and orders != 0:
+        if orders and revenue is not None:
             avg_bill = revenue / orders
 
-        ad_spend = await self._fetch_ad_spend(report_date)
-        if ad_spend is None:
-            ad_spend = self._pick_metric(analytics_totals, "adv_sum")
-            if ad_spend is None:
-                ad_spend = self._pick_metric(legacy_totals, "adv_sum")
-
         return {
-            "impressions": impressions,
-            "clicks": clicks,
-            "add_to_cart": add_to_cart,
+            "impressions": analytics_totals.get("hits_view"),
+            "clicks": analytics_totals.get("session_view_pdp"),
+            "add_to_cart": analytics_totals.get("hits_tocart_pdp"),
             "orders": orders,
             "avg_bill": avg_bill,
             "order_sum": revenue,
-            "ad_spend": ad_spend,
-            "search_position": search_position,
+            "ad_spend": await self._fetch_ad_spend(report_date),
+            "search_position": analytics_totals.get("position_category"),
         }
 
     async def _fetch_sales_funnel_metrics(self, report_date: date) -> dict[str, float]:
@@ -82,32 +53,6 @@ class OzonClient:
                 "revenue",
             ],
             "dimension": ["day"],
-            "filters": [],
-            "sort": [],
-            "limit": 1000,
-            "offset": 0,
-        }
-        response = await self._seller_post("/v1/analytics/data", json=payload)
-        totals = self._sum_metrics(response, fallback_metric_names=payload["metrics"])
-        if not totals:
-            logger.warning("Ozon analytics response did not contain parsable metrics")
-        return totals
-
-    async def _fetch_legacy_metrics(self, report_date: date) -> dict[str, float]:
-        payload = {
-            "date_from": report_date.isoformat(),
-            "date_to": report_date.isoformat(),
-            "metrics": [
-                "views",
-                "clicks",
-                "to_cart",
-                "orders",
-                "revenue",
-                "avg_price",
-                "adv_sum",
-                "position_category",
-            ],
-            "dimension": ["sku"],
             "filters": [],
             "sort": [],
             "limit": 1000,
@@ -184,45 +129,18 @@ class OzonClient:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            row_value = OzonClient._extract_expense_value(row)
-            if row_value is None:
-                continue
-            total += row_value
-            found = True
+            for key in ("expense", "spent", "sum"):
+                value = row.get(key)
+                if value is None:
+                    continue
+                try:
+                    total += float(value)
+                    found = True
+                    break
+                except (TypeError, ValueError):
+                    continue
 
         return total if found else None
-
-    @staticmethod
-    def _extract_expense_value(row: dict[str, object]) -> float | None:
-        candidate_keys = (
-            "expense",
-            "spent",
-            "sum",
-            "cost",
-            "expense_value",
-            "expensevalue",
-            "money_spent",
-            "moneyspent",
-        )
-
-        for key in candidate_keys:
-            if key in row:
-                try:
-                    return float(row[key])
-                except (TypeError, ValueError):
-                    pass
-
-        for value in row.values():
-            if not isinstance(value, dict):
-                continue
-            for nested_key in candidate_keys:
-                if nested_key in value:
-                    try:
-                        return float(value[nested_key])
-                    except (TypeError, ValueError):
-                        pass
-
-        return None
 
     @staticmethod
     def _sum_metrics(raw: dict, fallback_metric_names: list[str]) -> dict[str, float]:
@@ -292,23 +210,3 @@ class OzonClient:
                 if isinstance(metric_name, str):
                     names.append(metric_name)
         return names
-
-    @staticmethod
-    def _add_metric(target: dict[str, float], name: object, value: object) -> None:
-        if not isinstance(name, str):
-            return
-
-        normalized_name = name.strip().lower()
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            return
-        target[normalized_name] = target.get(normalized_name, 0.0) + numeric
-
-    @staticmethod
-    def _pick_metric(totals: dict[str, float], *names: str) -> float | None:
-        for name in names:
-            value = totals.get(name)
-            if value is not None:
-                return value
-        return None
