@@ -20,28 +20,21 @@ class OzonClient:
 
     async def fetch_metrics(self, report_date: date) -> dict[str, int | float | str | None]:
         analytics_totals = await self._fetch_sales_funnel_metrics(report_date)
-
-        orders = self._pick_metric(analytics_totals, "ordered_units", "orders")
-        revenue = self._pick_metric(analytics_totals, "revenue", "sales_sum", "sum")
-
+        orders = analytics_totals.get("ordered_units")
+        revenue = analytics_totals.get("revenue")
         avg_bill = None
-        if orders is not None and revenue is not None and orders != 0:
+        if orders and revenue is not None:
             avg_bill = revenue / orders
 
         return {
-            "impressions": self._pick_metric(analytics_totals, "hits_view", "views", "view", "show"),
-            "clicks": self._pick_metric(analytics_totals, "session_view_pdp", "clicks"),
-            "add_to_cart": self._pick_metric(
-                analytics_totals,
-                "hits_tocart_pdp",
-                "to_cart",
-                "hits_tocart",
-            ),
+            "impressions": analytics_totals.get("hits_view"),
+            "clicks": analytics_totals.get("session_view_pdp"),
+            "add_to_cart": analytics_totals.get("hits_tocart_pdp"),
             "orders": orders,
             "avg_bill": avg_bill,
             "order_sum": revenue,
             "ad_spend": await self._fetch_ad_spend(report_date),
-            "search_position": self._pick_metric(analytics_totals, "position_category"),
+            "search_position": analytics_totals.get("position_category"),
         }
 
     async def _fetch_sales_funnel_metrics(self, report_date: date) -> dict[str, float]:
@@ -66,10 +59,7 @@ class OzonClient:
             "offset": 0,
         }
         response = await self._seller_post("/v1/analytics/data", json=payload)
-        totals = self._sum_metrics(response, fallback_metric_names=payload["metrics"])
-        if not totals:
-            logger.warning("Ozon analytics response did not contain parsable metrics")
-        return totals
+        return self._sum_metrics(response, fallback_metric_names=payload["metrics"])
 
     async def _fetch_ad_spend(self, report_date: date) -> float | None:
         if not self.performance_client_id or not self.performance_client_secret:
@@ -220,23 +210,3 @@ class OzonClient:
                 if isinstance(metric_name, str):
                     names.append(metric_name)
         return names
-
-    @staticmethod
-    def _add_metric(target: dict[str, float], name: object, value: object) -> None:
-        if not isinstance(name, str):
-            return
-
-        normalized_name = name.strip().lower()
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            return
-        target[normalized_name] = target.get(normalized_name, 0.0) + numeric
-
-    @staticmethod
-    def _pick_metric(totals: dict[str, float], *names: str) -> float | None:
-        for name in names:
-            value = totals.get(name)
-            if value is not None:
-                return value
-        return None
